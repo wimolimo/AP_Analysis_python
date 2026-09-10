@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: cloud18-ap-analysis
+Version: 0.1.0
+Summary: Python tools for CLOUD18 atmospheric-physics data analysis
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.24
+Requires-Dist: pandas>=2.0
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: scipy>=1.10
