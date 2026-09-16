@@ -112,7 +112,16 @@ def md_plot(
     df_plot = comp[comp["SumFormula"].isin(common)].merge(
         agg_series.rename("AggIntensity"), left_on="SumFormula", right_index=True, how="inner"
     )
-    df_plot = df_plot[df_plot["AggIntensity"] > getattr(cfg, "MIN_INTENSITY", 0.0)]
+
+    i_cut = float(getattr(cfg, "MIN_INTENSITY", 0.005))
+
+    n_before = len(df_plot)
+    df_plot = df_plot[df_plot["AggIntensity"] > i_cut].copy()
+    n_dropped = n_before - len(df_plot)
+    if n_dropped:
+        print(f"[md_plot] dropped {n_dropped}/{n_before} compounds with "
+              f"intensity <= {i_cut:.3g} ppt")
+
     if df_plot.empty:
         raise RuntimeError("No data to plot after time-window aggregation and filtering.")
 
@@ -137,7 +146,7 @@ def md_plot(
         sizes = float(getattr(cfg, "POINT_SIZE", 12.0))
 
     # Plot
-    fig, ax = plt.subplots(figsize=getattr(cfg, "FIGSIZE", (9, 5.5)))
+    fig, ax = plt.subplots(figsize=getattr(cfg, "MD_FIG_SIZE", (9, 5.5)))
 
     scatter_kwargs = dict(
         c=cspec.values,
@@ -177,7 +186,7 @@ def md_plot(
     if getattr(cfg, "SIZE_BY_INTENSITY", True) and getattr(cfg, "SIZE_LEGEND", True):
         intens = df_plot["AggIntensity"].values
 
-        levels = _size_legend_levels(intens)
+        levels = [v for v in _size_legend_levels(intens) if v > i_cut]
         level_sizes = _compute_sizes_from_intensity(
             np.array(levels, dtype=float),
             reference_intensity=intens,
@@ -499,97 +508,23 @@ def _as_unix_seconds(dt: datetime) -> float:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
 
-def _size_transform(x: np.ndarray) -> np.ndarray:
-    """Map intensity -> monotonic scale space used for marker areas."""
+def _compute_sizes_from_intensity(x, reference_intensity=None) -> np.ndarray:
+    """
+    Absolute power-law size mapping, no clipping:
+
+        s / SIZE_ANCHOR_S = (I / SIZE_ANCHOR_I) ** SIZE_EXP
+
+    Non-positive intensities return NaN — they must be filtered out
+    upstream, not silently floored.
+    """
+    i_ref = float(getattr(cfg, "SIZE_ANCHOR_I", 100.0))
+    s_ref = float(getattr(cfg, "SIZE_ANCHOR_S", 45.0))
+    p     = float(getattr(cfg, "SIZE_EXP", 1.0))
+
     x = np.asarray(x, dtype=float)
-    scale = getattr(cfg, "SIZE_SCALE", "log").lower()
-
-    if scale == "log":
-        floor = float(getattr(cfg, "SIZE_FLOOR", 1e-3))
-        return np.log10(np.maximum(x, floor))
-    if scale == "linear":
-        return np.maximum(x, 0.0)
-    raise ValueError("config.SIZE_SCALE must be 'log' or 'linear'")
-
-
-def _size_limits(reference: np.ndarray) -> Tuple[float, float]:
-    """
-    Intensity values that map to SIZE_MIN and SIZE_MAX.
-    Explicit config values win; otherwise percentiles, optionally snapped to decades.
-    """
-    scale = getattr(cfg, "SIZE_SCALE", "log").lower()
-    floor = float(getattr(cfg, "SIZE_FLOOR", 1e-3))
-
-    vmin = getattr(cfg, "SIZE_VMIN", None)
-    vmax = getattr(cfg, "SIZE_VMAX", None)
-
-    ref = np.asarray(reference, dtype=float)
-    ref = ref[np.isfinite(ref)]
-    if scale == "log":
-        ref = ref[ref > floor]      # ignore noise/negatives when setting the range
-
-    if ref.size == 0:
-        return (floor, floor * 1000.0) if scale == "log" else (0.0, 1.0)
-
-    if vmin is None:
-        vmin = float(np.nanpercentile(ref, float(getattr(cfg, "SIZE_PLOW", 2.0))))
-    if vmax is None:
-        vmax = float(np.nanpercentile(ref, float(getattr(cfg, "SIZE_PHIGH", 99.5))))
-
-    vmin, vmax = float(vmin), float(vmax)
-
-    if scale == "log":
-        vmin = max(vmin, floor)
-        if vmax <= vmin:
-            vmax = vmin * 10.0
-        if getattr(cfg, "SIZE_SNAP_DECADES", True):
-            vmin = 10.0 ** np.floor(np.log10(vmin))
-            vmax = 10.0 ** np.ceil(np.log10(vmax))
-            if vmax <= vmin:
-                vmax = vmin * 10.0
-    else:
-        if vmax <= vmin:
-            vmax = vmin + 1.0
-
-    return vmin, vmax
-
-
-def _compute_sizes_from_intensity(
-    intensity: np.ndarray,
-    reference_intensity: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """
-    Map intensity to marker areas.
-
-    The mapping is fully defined by (vmin, vmax) from _size_limits(reference),
-    so legend markers and data markers are guaranteed to use the same scale.
-    """
-    x = np.asarray(intensity, dtype=float)
-    ref = x if reference_intensity is None else np.asarray(reference_intensity, dtype=float)
-
-    vmin, vmax = _size_limits(ref)
-
-    lo, hi = _size_transform(np.array([vmin, vmax], dtype=float))
-    if not np.isfinite(lo):
-        lo = 0.0
-    if not np.isfinite(hi) or hi <= lo:
-        hi = lo + 1.0
-
-    t = _size_transform(x)
-    norm = np.clip((t - lo) / (hi - lo), 0.0, 1.0)
-
-    smin = float(getattr(cfg, "SIZE_MIN", 8.0))
-    smax = float(getattr(cfg, "SIZE_MAX", 250.0))
-
-    # Optional perceptual tweak: 0.5 makes the *diameter* grow linearly in
-    # scale space instead of the area. 1.0 = area-linear (default).
-    power = float(getattr(cfg, "SIZE_POWER", 1.0))
-    if power != 1.0:
-        norm = norm ** power
-
-    sizes = smin + norm * (smax - smin)
-    return np.where(np.isfinite(sizes), sizes, smin)
-
+    with np.errstate(invalid="ignore", divide="ignore"):
+        s = np.where(x > 0.0, s_ref * np.power(x / i_ref, p), np.nan)
+    return s
 
 def _size_legend_levels(reference: np.ndarray) -> List[float]:
     """

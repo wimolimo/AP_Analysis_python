@@ -22,6 +22,9 @@ STAGE_SETTINGS = {
 
 OUTPUT_DIR = Path("output")
 
+# mass defect plot settings
+MD_FIG_SIZE = (14, 8)
+
 # Default coloring mode: "OC" or "On"
 COLOR_BY = "On"
 
@@ -36,7 +39,7 @@ OC_VMAX = 1.2
 OC_NAN_COLOR = "lightgray"
 
 # --- discrete number-of-oxygens scale ---
-ON_CMAP = "plasma"         # base cmap that gets sampled into discrete bins
+ON_CMAP = "turbo"         # base cmap that gets sampled into discrete bins
 ON_MIN = 0                  # lowest O bin
 ON_MAX = None                 # highest O bin, None -> auto from data
 ON_CLIP_HIGH = False         # values > ON_MAX go into the top bin, labelled ">=12"
@@ -53,24 +56,19 @@ YLABEL = "Mass defect [Da]"
 # --- size mapping ---
 SIZE_BY_INTENSITY = True
 SIZE_SCALE = "log"          # "log" or "linear"
-SIZE_MIN = 5.0
-SIZE_MAX = 1000.0
 ALPHA = 0.7
+MIN_INTENSITY = 0.005      # ppt
 
-SIZE_FLOOR = 1e-6           # intensities <= this get the smallest marker (log mode)
-SIZE_VMIN = None            # explicit intensity at SIZE_MIN; None -> auto from data
-SIZE_VMAX = None            # explicit intensity at SIZE_MAX; None -> auto from data
-SIZE_PLOW = 0.0             # percentile used when SIZE_VMIN is None
-SIZE_PHIGH = 100.0           # percentile used when SIZE_VMAX is None
-SIZE_SNAP_DECADES = False    # round auto limits outward to whole decades
-SIZE_POWER = 2.0              # power for mapping intensity to marker size (2.0 = linear, 1.0 = sqrt, etc.)
+SIZE_ANCHOR_I = 1.0     # ppt
+SIZE_ANCHOR_S = 400.0      # pt² at the anchor intensity
+SIZE_EXP = 0.5            # power for mapping intensity to marker size (1.0 = linear, 0.5 = sqrt, etc.)
 
 # --- size legend ---
 SIZE_LEGEND = True
 SIZE_LEGEND_TITLE = "Mean intensity [ppt]"
 SIZE_LEGEND_STYLE = "geom"   # "decade" | "geom" | "explicit"
 SIZE_LEGEND_NMAX = 3           # max entries for "decade", exact count for "geom"
-SIZE_LEGEND_LEVELS = None      # e.g. [0.01, 0.1, 1, 100] -> forces "explicit"
+SIZE_LEGEND_LEVELS = [0.01, 1, 100]      # e.g. [0.01, 0.1, 1, 100] -> forces "explicit"
 SIZE_LEGEND_LOC = "upper right"
 
 # reference lines
