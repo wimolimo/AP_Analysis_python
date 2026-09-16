@@ -52,7 +52,13 @@ time_range = (
     datetime(2025, 10, 2, 4, 0, 0),
 )
 
-composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.txt"
-trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.csv"
+# high resolution data
+# composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.txt"
+# trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.csv"
 
-md_plot(composition_file, trace_file, time_range=time_range, ylim=(-0.05, 0.45), savepath="md_plot.png")
+# low resolution data
+composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.txt"
+trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.csv"
+
+md_plot(composition_file, trace_file, time_range=time_range, xlim=(100, 350), ylim=(0.02, 0.205), savepath="output/-25C/md_plot.png",
+        stream=True, color_by="On", reference_families=["C10H15Ox", "C10H16Ox", "C10H17Ox", "C10H18Ox", "C9H16Ox", "C9H14Ox"])

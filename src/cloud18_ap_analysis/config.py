@@ -22,22 +22,59 @@ STAGE_SETTINGS = {
 
 OUTPUT_DIR = Path("output")
 
-FIGSIZE = (9, 5.5)
-CMAP = "viridis"
-POINT_SIZE = 12.0
-ALPHA = 0.8
-LOG_COLOR = True       # use log10(intensity + 1) for color
-MIN_INTENSITY = 0.0    # filter out weak peaks
-DPI = 150              # when saving
-BACKGROUND = "white"   # facecolor for saved figs (optional)
+# Default coloring mode: "OC" or "On"
+COLOR_BY = "On"
 
-# Size settings for marker size based on intensity
-SIZE_BY_INTENSITY = True     # enable size ~ intensity
-SIZE_SCALE = "linear"           # "log" or "linear"
-SIZE_MIN = 8.0               # smallest marker size (points^2 in matplotlib)
-SIZE_MAX = 80.0              # largest marker size
-SIZE_PLOW = 5.0              # lower percentile for robust clipping
-SIZE_PHIGH = 95.0            # upper percentile for robust clipping
+# --- continuous O:C scale ---
+OC_CMAP = "plasma"          # or "custom_oc" if you use the custom list
+OC_COLORS = [
+    "#7f3b08", "#d95f02", "#fdb863", "#ffffbf",
+    "#91bfdb", "#4575b4", "#313695",
+]
+OC_VMIN = 0.0
+OC_VMAX = 1.2
+OC_NAN_COLOR = "lightgray"
+
+# --- discrete number-of-oxygens scale ---
+ON_CMAP = "plasma"         # base cmap that gets sampled into discrete bins
+ON_MIN = 0                  # lowest O bin
+ON_MAX = None                 # highest O bin, None -> auto from data
+ON_CLIP_HIGH = False         # values > ON_MAX go into the top bin, labelled ">=12"
+ON_NAN_COLOR = "lightgray"
+ON_LABEL = "Number of O atoms"
+ADDUCT_PRIORITY = {"NH3H+": 0, "H+": 1, "": 2}   # lower = preferred
+REFERENCE_FAMILIES = ["C10H15Ox", "C10H16Ox", "C10H17Ox", "C10H18Ox"]  # e.g. ["C10H16Ox", "C10H17Ox"]
+
+
+# Axis / label styling optional
+XLABEL = "Compound m/z [Da]"
+YLABEL = "Mass defect [Da]"
+
+# --- size mapping ---
+SIZE_BY_INTENSITY = True
+SIZE_SCALE = "log"          # "log" or "linear"
+SIZE_MIN = 5.0
+SIZE_MAX = 1000.0
+ALPHA = 0.7
+
+SIZE_FLOOR = 1e-6           # intensities <= this get the smallest marker (log mode)
+SIZE_VMIN = None            # explicit intensity at SIZE_MIN; None -> auto from data
+SIZE_VMAX = None            # explicit intensity at SIZE_MAX; None -> auto from data
+SIZE_PLOW = 0.0             # percentile used when SIZE_VMIN is None
+SIZE_PHIGH = 100.0           # percentile used when SIZE_VMAX is None
+SIZE_SNAP_DECADES = False    # round auto limits outward to whole decades
+SIZE_POWER = 2.0              # power for mapping intensity to marker size (2.0 = linear, 1.0 = sqrt, etc.)
+
+# --- size legend ---
 SIZE_LEGEND = True
-SIZE_LEGEND_LEVELS = None    # None = use percentiles [10, 50, 90] of intensity in window
-SIZE_LEGEND_TITLE = "Intensity (relative)"
+SIZE_LEGEND_TITLE = "Mean intensity [ppt]"
+SIZE_LEGEND_STYLE = "geom"   # "decade" | "geom" | "explicit"
+SIZE_LEGEND_NMAX = 3           # max entries for "decade", exact count for "geom"
+SIZE_LEGEND_LEVELS = None      # e.g. [0.01, 0.1, 1, 100] -> forces "explicit"
+SIZE_LEGEND_LOC = "upper right"
+
+# reference lines
+REF_LINE_X_END = 320.0     # extend every family line to this nominal mass
+REF_LINE_X_START = None    # optional: fixed left end; None = start at first member
+REF_LINE_COLOR = "0.5"
+REF_LINE_WIDTH = 1.1
