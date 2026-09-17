@@ -8,7 +8,8 @@ import calendar
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from matplotlib.colors import LogNorm
+from matplotlib.colors import ListedColormap, LogNorm
+import itertools
 
 from .models import Channel, Dataset, SMPSData
 from .loading import load_data
@@ -75,13 +76,17 @@ def _present(fig, interactive=False, savepath=None):
     return None
 
 
-def _pick_colors(n):
+def _get_next_colors(n):
+    """Gets the next `n` colors from the global color generator."""
     if n <= 0:
         return []
-    if n >= len(PAPER_LINE_COLORS):
-        return [PAPER_LINE_COLORS[i % len(PAPER_LINE_COLORS)] for i in range(n)]
-    idx = np.rint(np.linspace(0, len(PAPER_LINE_COLORS) - 1, n)).astype(int)
-    return [PAPER_LINE_COLORS[i] for i in idx]
+    # Take the next n colors from the generator
+    return [next(_COLOR_GENERATOR) for _ in range(n)]
+
+def _reset_color_cycle():
+    """Resets the global color generator to the beginning of the list."""
+    global _COLOR_GENERATOR
+    _COLOR_GENERATOR = itertools.cycle(PAPER_LINE_COLORS)
 
 
 def _append_to_filename(path, tag):
@@ -374,7 +379,7 @@ def _prepare_smps_for_plot(smps):
     conc = conc[np.ix_(valid_diam, valid_time)]
 
     conc_masked = np.ma.masked_where(
-        (~np.isfinite(conc)) | (conc <= 0),
+        (~np.isfinite(conc)) | (conc < 0),
         conc,
     )
 
@@ -389,7 +394,9 @@ def _prepare_smps_for_plot(smps):
     else:
         vmin, vmax = 1.0, 1e4
 
-    return time_num, diameters, conc_masked, LogNorm(vmin=vmin, vmax=vmax)
+    norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
+
+    return time_num, diameters, conc_masked, norm
 
 def _plot_smps_on_axis(fig, ax, smps, ylabel=None, cbar_label=None,
                        xlims=None, ylims=None):
@@ -398,7 +405,12 @@ def _plot_smps_on_axis(fig, ax, smps, ylabel=None, cbar_label=None,
     ax.set_ylabel(ylabel or "Diameter [nm]")
     ax.set_yscale("log")
 
-    cmap = plt.get_cmap("inferno").copy()
+    original_cmap = plt.get_cmap("inferno")
+    new_colors = original_cmap(np.linspace(0, 1, 256))
+    
+    # Set the first color in the list (for the bottom of the scale) to black
+    new_colors[0] = (0, 0, 0, 1) # RGBA for black
+    cmap = ListedColormap(new_colors)
     cmap.set_bad("white")
 
     if len(time_num) == 0 or len(diameters) == 0 or conc.size == 0:
@@ -443,7 +455,7 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
     if tag:
         title = f"{title} ({tag})"
 
-    colors = _pick_colors(len(channels))
+    colors = _get_next_colors(len(channels))
 
     if stacked:
         fig, axes = plt.subplots(
@@ -522,6 +534,7 @@ def plot_channel(ch, ylabel=None, title=None, savepath=None, interactive=False,
 def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
               interactive=False, xlims=None, ylims=None, ylabels=None,
               smoothing=None, stages=None):
+    _reset_color_cycle()
     if isinstance(data_or_path, (list, tuple)):
         return plot_datasets(
             data_or_path, channels=channels, savepath=savepath,
@@ -664,13 +677,13 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
             right = _maybe_smooth(_resolve_channels(data, spec[1]), smoothing)
 
             if not right:
-                colors = _pick_colors(len(left))
+                colors = _get_next_colors(len(left))
                 _plot_on_axis(ax, left, colors)
                 if left:
                     ax.legend(loc="upper left")
             else:
                 total = len(left) + len(right)
-                colors = _pick_colors(total)
+                colors = _get_next_colors(total)
 
                 _plot_on_axis(ax, left, colors, 0)
 
@@ -700,7 +713,7 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
         else:
             selected = _maybe_smooth(_resolve_channels(data, spec), smoothing)
 
-            colors = _pick_colors(len(selected))
+            colors = _get_next_colors(len(selected))
             _plot_on_axis(ax, selected, colors)
 
             if selected:
