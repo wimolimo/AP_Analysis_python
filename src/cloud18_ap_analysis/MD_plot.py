@@ -13,6 +13,7 @@ from matplotlib.colors import (
     LinearSegmentedColormap,
     ListedColormap,
 )
+import matplotlib.patches as mpatches
 
 # Pull plotting settings from the package config module; provide safe defaults
 try:
@@ -45,6 +46,7 @@ def md_plot(
     trace_path: str,
     time_range: Tuple[datetime, datetime],  # datetime only
     clip_neg: bool = False,                 # clip negative intensities to 0 before aggregating
+    mass_range: Optional[Tuple[float, float]] = None, # e.g., (100, 350)
     color_by: Optional[str] = None,        # "OC" or "On"; None -> config.COLOR_BY
     reference_families: Optional[List[str]] = None,   # e.g. ["C10H16Ox", "C10H17Ox"]
     xlim: Optional[Tuple[float, float]] = None,
@@ -61,6 +63,7 @@ def md_plot(
     - trace_path: huge trace csv (with 'number of header rows', columns Time, unixTime, and SumFormula columns)
     - time_range: (datetime_start, datetime_end); naive datetimes assumed UTC
     - clip_neg: clip negative intensities to 0 before aggregating
+    - mass_range: range of masses to include in the plot, e.g. (100, 350)
     - reference_families: list of homologous families, e.g. ["C10H16Ox", "C9H16Ox"];
       each is drawn as a dashed line through the actual plotted compounds
     - xlim, ylim: axis limits (tuples), e.g. xlim=(50, 1000), ylim=(-0.2, 0.2)
@@ -112,6 +115,24 @@ def md_plot(
     df_plot = comp[comp["SumFormula"].isin(common)].merge(
         agg_series.rename("AggIntensity"), left_on="SumFormula", right_index=True, how="inner"
     )
+
+    # Filter by mass range, if provided
+    if mass_range is not None:
+        if not (isinstance(mass_range, (list, tuple)) and len(mass_range) == 2 and mass_range[0] < mass_range[1]):
+            raise ValueError("mass_range must be a tuple or list of two numbers (min_mass, max_mass).")
+        
+        n_before_mass_filter = len(df_plot)
+        m_min, m_max = mass_range
+        
+        # Filter based on the NeutralMass column
+        df_plot = df_plot[
+            (df_plot["NeutralMass"] >= m_min) & (df_plot["NeutralMass"] <= m_max)
+        ].copy()
+        
+        n_dropped_mass = n_before_mass_filter - len(df_plot)
+        if n_dropped_mass:
+            print(f"[md_plot] dropped {n_dropped_mass}/{n_before_mass_filter} compounds "
+                  f"outside mass range [{m_min:.1f}, {m_max:.1f}]")
 
     i_cut = float(getattr(cfg, "MIN_INTENSITY", 0.005))
 
@@ -193,11 +214,17 @@ def md_plot(
         )
 
         handles = [
-            ax.scatter([], [], s=s, color="0.45", alpha=0.65, edgecolors="black")
+            ax.scatter([], [], s=s, color="0.35", alpha=0.6, edgecolors="black")
             for s in level_sizes
         ]
         labels = [_format_size_label(v) for v in levels]
 
+        dummy_handle = mpatches.Patch(color='none')
+        dummy_label = ""
+        handles.insert(1, dummy_handle)
+        labels.insert(1, dummy_label)
+        handles.insert(0, dummy_handle)
+        labels.insert(0, dummy_label)
         size_leg = ax.legend(
             handles,
             labels,
@@ -205,9 +232,9 @@ def md_plot(
             loc=getattr(cfg, "SIZE_LEGEND_LOC", "upper right"),
             frameon=True,
             framealpha=0.9,
-            labelspacing=1.8,        # room for the big circles
-            handletextpad=1.1,
-            borderpad=1.5,
+            labelspacing=1.5,        # room for the big circles
+            handletextpad=3.5,
+            borderpad=1.8,
             scatterpoints=1,
             fontsize=10,
             title_fontsize=9,

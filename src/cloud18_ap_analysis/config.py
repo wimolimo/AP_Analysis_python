@@ -68,7 +68,7 @@ SIZE_LEGEND = True
 SIZE_LEGEND_TITLE = "Mean intensity [ppt]"
 SIZE_LEGEND_STYLE = "geom"   # "decade" | "geom" | "explicit"
 SIZE_LEGEND_NMAX = 3           # max entries for "decade", exact count for "geom"
-SIZE_LEGEND_LEVELS = [0.01, 1, 100]      # e.g. [0.01, 0.1, 1, 100] -> forces "explicit"
+SIZE_LEGEND_LEVELS = [100, 1, 0.01]      # e.g. [0.01, 0.1, 1, 100] -> forces "explicit"
 SIZE_LEGEND_LOC = "upper right"
 
 # reference lines
