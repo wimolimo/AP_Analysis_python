@@ -8,7 +8,8 @@ import calendar
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from matplotlib.colors import ListedColormap, LogNorm
+from matplotlib.colors import ListedColormap, LogNorm#
+import matplotlib.patches as mpatches
 import itertools
 
 from .models import Channel, Dataset, SMPSData
@@ -16,6 +17,8 @@ from .loading import load_data
 from .stages import get_stages
 from .config import DPI, PAPER_LINE_COLORS, PAPER_UNSTACKED_SIZE, STAGE_SETTINGS
 
+import pandas as pd
+import warnings
 
 
 def set_plot_backend(backend: str):
@@ -278,6 +281,63 @@ def _draw_stages(ax, stages, xlims=None, print_details=False):
             va="bottom",
         )
 
+def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=50):
+    """
+    Draws shaded gray regions on an axis where fan speed is above a threshold.
+    This version uses pure NumPy to find the contiguous blocks.
+
+    Args:
+        ax: The matplotlib Axes object to draw on.
+        data: The Dataset object containing the channels.
+        fan_speed_col: The name of the fan speed Channel in the Dataset.
+        threshold: The fan speed percentage to use as a threshold.
+    """
+    # 1. Safely get the fan speed Channel
+    if fan_speed_col not in data.channels:
+        warnings.warn(f"Fan speed channel '{fan_speed_col}' not found. Cannot draw shading.")
+        return
+
+    fan_channel = data.channels[fan_speed_col]
+    if fan_channel.time.size < 2:  # Need at least 2 points to find blocks
+        return
+
+    # 2. Convert time array to datetimes for plotting with axvspan
+    # This is the only part where Pandas is useful here.
+    time_as_datetime = pd.to_datetime(fan_channel.time, unit='ms')
+    n_times = len(time_as_datetime)
+    
+    # 3. Find contiguous blocks using pure NumPy
+    is_low = fan_channel.values < threshold
+
+    # Find the indices where the state changes
+    # Pad with False at both ends to catch changes at the very start/end
+    padded_is_low = np.concatenate(([False], is_low, [False]))
+    # Use diff() to find changes: +1 means start of a low block, -1 means end
+    diffs = np.diff(padded_is_low.astype(np.int8))
+    
+    start_indices = np.where(diffs == 1)[0]
+    end_indices = np.where(diffs == -1)[0]
+
+    # 4. Draw a shaded region for each start/end pair
+    for start_idx, end_idx in zip(start_indices, end_indices):
+        # Get the corresponding start and end times
+        start_time = time_as_datetime[start_idx]
+        # The end_idx from diff corresponds to the start of the "low" period,
+        # so it's the correct exclusive end time for our high period span.
+        if end_idx < n_times:
+            end_time = time_as_datetime[end_idx]
+        else:
+            end_time = time_as_datetime[-1]
+
+        ax.axvspan(
+            start_time,
+            end_time,
+            color='gray',
+            alpha=0.2,
+            zorder=0,  # Draw behind the plot lines
+            linewidth=0
+        )
+
 
 def _style_axis(ax):
     ax.grid(True, alpha=0.35)
@@ -407,7 +467,7 @@ def _plot_smps_on_axis(fig, ax, smps, ylabel=None, cbar_label=None,
 
     original_cmap = plt.get_cmap("inferno")
     new_colors = original_cmap(np.linspace(0, 1, 256))
-    
+
     # Set the first color in the list (for the bottom of the scale) to black
     new_colors[0] = (0, 0, 0, 1) # RGBA for black
     cmap = ListedColormap(new_colors)
@@ -467,6 +527,8 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
         axes = axes[:, 0]
         for i, (ax, ch) in enumerate(zip(axes, channels)):
             ax.plot(_channel_datetimes(ch), ch.values, color=colors[i])
+            if color_by_fan_speed and not _is_smps_data(data):
+                draw_fan_speed_shading(ax, ch.values, xlims=xlims)
             ax.set_ylabel(ch.name)
             ax.set_title(title if i == 0 else "")
             _style_axis(ax)
@@ -533,13 +595,14 @@ def plot_channel(ch, ylabel=None, title=None, savepath=None, interactive=False,
 
 def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
               interactive=False, xlims=None, ylims=None, ylabels=None,
-              smoothing=None, stages=None):
+              smoothing=None, stages=None, fan_speed_data=None):
     _reset_color_cycle()
     if isinstance(data_or_path, (list, tuple)):
         return plot_datasets(
             data_or_path, channels=channels, savepath=savepath,
             interactive=interactive, xlims=xlims, ylims=ylims,
             ylabels=ylabels, smoothing=smoothing, stages=stages,
+            fan_speed_data=fan_speed_data,
         )
     data = load_data(data_or_path) if isinstance(data_or_path, (str, Path)) else data_or_path
 
@@ -561,15 +624,15 @@ def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
     return _plot_channels(
         selected, title=title, stacked=stacked, savepath=savepath,
         interactive=interactive, xlims=xlims, ylims=ylims,
-        smoothing=smoothing, stages=stages,
+        smoothing=smoothing, stages=stages, fan_speed_data=fan_speed_data,
     )
 
 
 def plot_channels(channels, title="Overview", savepath=None, stacked=False,
-                  interactive=False, xlims=None, ylims=None):
+                  interactive=False, xlims=None, ylims=None, fan_speed_data=None):
     return _plot_channels(
         channels, title=title, savepath=savepath, stacked=stacked,
-        interactive=interactive, xlims=xlims, ylims=ylims,
+        interactive=interactive, xlims=xlims, ylims=ylims, fan_speed_data=fan_speed_data
     )
 
 
@@ -581,7 +644,7 @@ def plot_all(filepath, stacked=False, savepath=None, interactive=False,
 
 def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
                   xlims=None, ylims=None, ylabels=None, smoothing=None,
-                  stages=None):
+                  stages=None, fan_speed_data=None):
     """Plot multiple Dataset and/or SMPSData objects in stacked panels.
 
     Normal Dataset panels become line plots.
@@ -630,6 +693,9 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
 
         if i == n - 1:
             ax.set_xlabel("Time (UTC)")
+
+        if fan_speed_data is not None and not _is_smps_data(data):
+            _draw_fan_speed_shading(ax, fan_speed_data)
 
         panel_ylims = ylims[i] if isinstance(ylims, list) and i < len(ylims) else ylims
 
@@ -726,6 +792,26 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
 
         if stages is not None:
             _draw_stages(ax, stages, xlims, print_details=(i == n - 1))
+
+    if fan_speed_data is not None:
+        ax0 = axes[0] # Target the first subplot's axis
+
+        # Check if a legend already exists on the first plot (it might be SMPS)
+        if ax0.get_legend() is not None:
+            # Get the handles and labels that are already in the legend
+            current_handles, current_labels = ax0.get_legend_handles_labels()
+
+            # Create our proxy artist for the gray area.
+            # Use the same alpha as in _draw_fan_speed_shading for consistency.
+            fan_patch = mpatches.Patch(color='gray', alpha=0.2)
+            fan_label = 'Fan Speed 12%'
+
+            # Prepend the new entry to the existing lists
+            new_handles = [fan_patch] + current_handles
+            new_labels = [fan_label] + current_labels
+
+            # Redraw the legend on the first subplot with the combined list
+            ax0.legend(new_handles, new_labels, loc="upper left")
 
     if smoothing is not None:
         tag = _smoothing_label(smoothing)
