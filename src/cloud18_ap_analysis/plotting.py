@@ -45,16 +45,6 @@ def _channel_datetimes(ch):
     ]
 
 
-def _utcify_datetime(dt):
-    return dt
-
-
-def _utcify_range(xlims):
-    if xlims is None:
-        return None
-    return tuple(_utcify_datetime(dt) for dt in xlims)
-
-
 def _datetime_to_unix_ms(dt):
     return (calendar.timegm(dt.timetuple()) + dt.microsecond / 1_000_000.0) * 1000.0
 
@@ -186,11 +176,13 @@ def _padded_ylims(ymin, ymax):
     return ymin - margin, ymax + margin
 
 
-def _compute_ylims(channels, xlims=None):
-    xlims = _utcify_range(xlims)
+def _compute_ylims(channels, xlims=None, yscale="linear"):
+    xlims = xlims
     ys = []
     for ch in channels:
         mask = np.isfinite(ch.values)
+        if yscale == "log":
+            mask &= ch.values > 0
         if xlims is not None:
             lo = _datetime_to_unix_ms(xlims[0])
             hi = _datetime_to_unix_ms(xlims[1])
@@ -198,6 +190,10 @@ def _compute_ylims(channels, xlims=None):
         ys.extend(ch.values[mask])
     if not ys:
         return None
+    if yscale == "log":
+        lo, hi = float(np.log10(np.min(ys))), float(np.log10(np.max(ys)))
+        margin = (hi - lo) * 0.05 if hi > lo else 0.05
+        return 10.0 ** (lo - margin), 10.0 ** (hi + margin)
     return _padded_ylims(float(np.min(ys)), float(np.max(ys)))
 
 
@@ -205,7 +201,7 @@ def _apply_ylims(ax, yl, channels, xlims):
     if yl is not None:
         ax.set_ylim(*yl)
     else:
-        computed = _compute_ylims(channels, xlims)
+        computed = _compute_ylims(channels, xlims, yscale=ax.get_yscale())
         if computed:
             ax.set_ylim(*computed)
 
@@ -244,42 +240,72 @@ def _print_stage_details(stage):
 
 
 def _draw_stages(ax, stages, xlims=None, print_details=False):
-    data = get_stages()
-    if not data:
-        print("Warning: no stages loaded. Call load_stages(filepath) first.")
-        return
-    xlims = _utcify_range(xlims)
-    label_key = None if stages is True else stages
-    x_span = (xlims[1] - xlims[0]).total_seconds() if xlims else 60
-    dt_offset = timedelta(seconds=x_span * STAGE_SETTINGS["text_offset"])
+    """
+    Draw stage markers and labels.
 
-    ymin, ymax = ax.get_ylim()
-    for stage in data:
-        t = stage["time"]
-        if t is None:
+    - Stage x-position follows the stage time.
+    - Label y-position is fixed relative to the axes, so vertical zooming
+      does not move the labels.
+    - Lines and labels are clipped to the axes during zooming/panning.
+    - Stages without a valid timestamp are skipped.
+    """
+    stage_data = get_stages()
+
+    if not stage_data:
+        print("Warning: no stages loaded.")
+        return
+
+    for stage in stage_data:
+
+        # Keep the timestamp extraction used by the original stage structure.
+        stage_time = stage.get("time")
+
+        # Some stage entries may not contain a valid timestamp.
+        if stage_time is None:
             continue
-        if xlims and not (xlims[0] <= t <= xlims[1]):
-            continue
-        if print_details:
-            _print_stage_details(stage)
-        label = _get_stage_label(stage, label_key)
-        if len(label) > STAGE_SETTINGS["max_length"]:
-            label = label[:STAGE_SETTINGS["max_length"]] + "…"
+
+        # Don't create artists for stages outside the initially requested
+        # plotting range.
+        if xlims is not None:
+            if stage_time < xlims[0] or stage_time > xlims[1]:
+                continue
+
+        label = _get_stage_label(stage, stages)
+
+        # Vertical stage marker.
         ax.axvline(
-            t, color=STAGE_SETTINGS["line_color"],
-            linewidth=STAGE_SETTINGS["line_width"],
-            linestyle=STAGE_SETTINGS["line_style"],
+            stage_time,
+            linewidth=0.8,
+            alpha=0.7,
+            clip_on=True,
         )
+
+        # Mixed coordinate system:
+        # x -> data coordinates (stage time)
+        # y -> axes coordinates (0 = bottom, 1 = top)
+        #
+        # Therefore the label stays at the same vertical position even
+        # when the y-axis is zoomed or rescaled.
         ax.text(
-            t + dt_offset,
-            ymin + 0.02 * (ymax - ymin),
+            stage_time,
+            0.02,
             label,
+            transform=ax.get_xaxis_transform(),
             rotation=90,
-            fontsize=STAGE_SETTINGS["font_size"],
-            color=STAGE_SETTINGS["font_color"],
-            ha="left",
             va="bottom",
+            ha="right",
+            fontsize=7,
+            clip_on=True,
         )
+
+        if print_details:
+            details = stage.get("details", [])
+
+            if details:
+                print(f"\n--- {label} ---")
+                for detail in details:
+                    print(f"  {detail}")
+
 
 def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=50):
     """
@@ -339,11 +365,12 @@ def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=5
         )
 
 
-def _style_axis(ax):
+def _style_axis(ax, yscale="linear"):
     ax.grid(True, alpha=0.35)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.tick_params(width=0.75, length=3)
+    ax.set_yscale(yscale)
 
 
 def _plot_on_axis(ax, channels, colors, offset=0):
@@ -508,8 +535,8 @@ def _plot_smps_on_axis(fig, ax, smps, ylabel=None, cbar_label=None,
 
 def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
                    interactive=False, xlims=None, ylims=None, smoothing=None,
-                   stages=None):
-    xlims = _utcify_range(xlims)
+                   stages=None, fan_speed_data=None, ylabel=None, yscale="log"):
+    """Plot selected channels from one Dataset."""
     channels = _maybe_smooth(channels, smoothing)
     savepath, tag = _prepare_savepath(savepath, smoothing)
     if tag:
@@ -525,33 +552,69 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
             squeeze=False,
         )
         axes = axes[:, 0]
+
         for i, (ax, ch) in enumerate(zip(axes, channels)):
             ax.plot(_channel_datetimes(ch), ch.values, color=colors[i])
-            if color_by_fan_speed and not _is_smps_data(data):
-                draw_fan_speed_shading(ax, ch.values, xlims=xlims)
+
+            if fan_speed_data is not None:
+                _draw_fan_speed_shading(ax, fan_speed_data)
+
             ax.set_ylabel(ch.name)
             ax.set_title(title if i == 0 else "")
-            _style_axis(ax)
+            _style_axis(ax, yscale=yscale)
+
             if i == len(channels) - 1:
                 ax.set_xlabel("Time (UTC)")
+
             if xlims:
                 ax.set_xlim(*xlims)
-            yl = ylims[i] if isinstance(ylims, (list, tuple)) and not (len(ylims) == 2 and all(isinstance(x, (int, float)) for x in ylims)) else ylims
+
+            yl = (
+                ylims[i]
+                if isinstance(ylims, (list, tuple))
+                and not (
+                    len(ylims) == 2
+                    and all(isinstance(x, (int, float)) for x in ylims)
+                )
+                else ylims
+            )
             _apply_ylims(ax, yl, [ch], xlims)
+
             if stages is not None:
-                _draw_stages(ax, stages, xlims)
+                _draw_stages(
+                    ax,
+                    stages,
+                    xlims,
+                    print_details=(i == len(channels) - 1),
+                )
+
+        # A shared custom ylabel only makes sense for a single stacked channel.
+        if ylabel is not None and len(axes) == 1:
+            axes[0].set_ylabel(ylabel)
+
     else:
         fig, ax = plt.subplots(figsize=PAPER_UNSTACKED_SIZE)
+
+        if fan_speed_data is not None:
+            _draw_fan_speed_shading(ax, fan_speed_data)
+
         _plot_on_axis(ax, channels, colors)
         ax.set_title(title)
         ax.set_xlabel("Time (UTC)")
-        _style_axis(ax)
+
+        if ylabel is not None:
+            ax.set_ylabel(ylabel)
+
+        _style_axis(ax, yscale=yscale)
         ax.legend(loc="upper right")
+
         if xlims:
             ax.set_xlim(*xlims)
+
         _apply_ylims(ax, ylims, channels, xlims)
+
         if stages is not None:
-            _draw_stages(ax, stages, xlims)
+            _draw_stages(ax, stages, xlims, print_details=True)
 
     _configure_save_and_present(fig, interactive, savepath)
     return None
@@ -572,8 +635,8 @@ def _configure_save_and_present(fig, interactive, savepath=None):
 
 
 def plot_channel(ch, ylabel=None, title=None, savepath=None, interactive=False,
-                 xlims=None, ylims=None, smoothing=None):
-    xlims = _utcify_range(xlims)
+                 xlims=None, ylims=None, smoothing=None, yscale="linear"):
+    """Plot one channel against UTC time with optional smoothing and limits."""
     ch = _maybe_smooth([ch], smoothing)[0]
     savepath, tag = _prepare_savepath(savepath, smoothing)
     title = title or ch.name
@@ -586,7 +649,7 @@ def plot_channel(ch, ylabel=None, title=None, savepath=None, interactive=False,
     ax.set_title(title)
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel(ylabel)
-    _style_axis(ax)
+    _style_axis(ax, yscale=yscale)
     if xlims:
         ax.set_xlim(*xlims)
     _apply_ylims(ax, ylims, [ch], xlims)
@@ -595,14 +658,15 @@ def plot_channel(ch, ylabel=None, title=None, savepath=None, interactive=False,
 
 def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
               interactive=False, xlims=None, ylims=None, ylabels=None,
-              smoothing=None, stages=None, fan_speed_data=None):
+              smoothing=None, stages=None, fan_speed_data=None, yscale="log"):
+    """Load or plot CLOUD18 data using the package's standard UTC time axis."""
     _reset_color_cycle()
     if isinstance(data_or_path, (list, tuple)):
         return plot_datasets(
             data_or_path, channels=channels, savepath=savepath,
             interactive=interactive, xlims=xlims, ylims=ylims,
             ylabels=ylabels, smoothing=smoothing, stages=stages,
-            fan_speed_data=fan_speed_data,
+            fan_speed_data=fan_speed_data, yscale=yscale,
         )
     data = load_data(data_or_path) if isinstance(data_or_path, (str, Path)) else data_or_path
 
@@ -617,19 +681,27 @@ def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
             ylabels=[ylabels] if ylabels is not None else None,
             smoothing=smoothing,
             stages=stages,
+            fan_speed_data=fan_speed_data,
+            yscale=yscale
         )
 
     selected = _resolve_channels(data, channels)
     title = Path(data_or_path).name if isinstance(data_or_path, (str, Path)) else "Data"
+    ylabel = ylabels
+    if isinstance(ylabels, (list, tuple)) and len(ylabels) == 1:
+        ylabel = ylabels[0]
+
     return _plot_channels(
         selected, title=title, stacked=stacked, savepath=savepath,
         interactive=interactive, xlims=xlims, ylims=ylims,
         smoothing=smoothing, stages=stages, fan_speed_data=fan_speed_data,
+        ylabel=ylabel, yscale=yscale,
     )
 
 
 def plot_channels(channels, title="Overview", savepath=None, stacked=False,
                   interactive=False, xlims=None, ylims=None, fan_speed_data=None):
+    """Plot an explicit sequence of Channel objects."""
     return _plot_channels(
         channels, title=title, savepath=savepath, stacked=stacked,
         interactive=interactive, xlims=xlims, ylims=ylims, fan_speed_data=fan_speed_data
@@ -638,13 +710,14 @@ def plot_channels(channels, title="Overview", savepath=None, stacked=False,
 
 def plot_all(filepath, stacked=False, savepath=None, interactive=False,
              xlims=None, ylims=None):
+    """Load a file and plot all available channels."""
     return plot_data(filepath, stacked=stacked, savepath=savepath,
                      interactive=interactive, xlims=xlims, ylims=ylims)
 
 
 def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
                   xlims=None, ylims=None, ylabels=None, smoothing=None,
-                  stages=None, fan_speed_data=None):
+                  stages=None, fan_speed_data=None, yscale="log"):
     """Plot multiple Dataset and/or SMPSData objects in stacked panels.
 
     Normal Dataset panels become line plots.
@@ -662,7 +735,7 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
 
         ylabels[i] = ("Diameter [nm]", "dN/dlogDp [cm⁻³]")
     """
-    xlims = _utcify_range(xlims)
+    xlims = xlims
     resolved = [load_data(d) if isinstance(d, (str, Path)) else d for d in datasets]
 
     n = len(resolved)
@@ -689,7 +762,7 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
 
     for i, (data, spec) in enumerate(zip(resolved, specs)):
         ax = axes[i]
-        _style_axis(ax)
+        _style_axis(ax, yscale=yscale)
 
         if i == n - 1:
             ax.set_xlabel("Time (UTC)")
@@ -751,10 +824,10 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
                 total = len(left) + len(right)
                 colors = _get_next_colors(total)
 
-                _plot_on_axis(ax, left, colors, 0)
+                _plot_on_axis(ax, left, colors)
 
                 ax2 = ax.twinx()
-                _style_axis(ax2)
+                _style_axis(ax2, yscale=yscale)
                 ax2.set_ylabel(right_ylabel or "")
 
                 _plot_on_axis(ax2, right, colors, len(left))

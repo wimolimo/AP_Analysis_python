@@ -16,22 +16,7 @@ from matplotlib.colors import (
 import matplotlib.patches as mpatches
 from .loading import _ensure_datetimes
 
-# Pull plotting settings from the package config module; provide safe defaults
-try:
-    from . import config as cfg
-except Exception:  # pragma: no cover
-    class cfg:  # fallback defaults
-        FIGSIZE = (9, 5.5)
-        CMAP = "plasma"
-        POINT_SIZE = 12.0
-        ALPHA = 0.8
-        LOG_COLOR = True
-        MIN_INTENSITY = 0.0
-        DPI = 150
-        BACKGROUND = "white"
-
-
-
+from . import config as cfg
 
 from .loading import (
     read_trace_header, read_composition_table, read_trace_table,
@@ -82,7 +67,9 @@ def md_plot(
     - savepath: if provided, save the figure to this path (PNG, PDF, etc.)
     - stream: stream the CSV by time window and only needed columns
     """
-    # Validate/normalize time range
+    plt.rcParams.update(cfg.PAPER_RC_PARAMS)
+
+    # Validate UTC time range
     t0_dt, t1_dt = _ensure_datetimes(time_range)
     if t1_dt < t0_dt:
         raise ValueError("time_range end < start")

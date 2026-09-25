@@ -7,6 +7,7 @@ _STAGE_DATA = []
 
 
 def parse_cloud_log(filepath):
+    """Parse CLOUD log stage blocks into dictionaries with UTC timestamps."""
     content = Path(filepath).read_text(encoding="utf-8", errors="replace")
     stage_numbers = re.findall(r"\*{12,}(\d+\.\d+)\*{12,}", content)
     blocks = re.split(r"\*{12,}\d+\.\d+\*{12,}", content)
@@ -37,6 +38,7 @@ def parse_cloud_log(filepath):
 
 
 def load_stages(filepath):
+    """Parse a CLOUD log and store its stages for subsequent plotting."""
     global _STAGE_DATA
     _STAGE_DATA = parse_cloud_log(filepath)
     print(f"Loaded {len(_STAGE_DATA)} stages")
@@ -44,4 +46,5 @@ def load_stages(filepath):
 
 
 def get_stages():
+    """Return the stages most recently loaded with :func:`load_stages`."""
     return _STAGE_DATA

@@ -36,6 +36,8 @@ class Dataset:
 
 @dataclass
 class SMPSData:
+    """SMPS size-distribution data stored as time × diameter bins."""
+
     name: str
     time: np.ndarray          # datetime objects or np.nan for missing
     diameters: np.ndarray     # bin midpoints [nm]

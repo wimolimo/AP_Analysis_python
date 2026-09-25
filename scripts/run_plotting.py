@@ -7,10 +7,14 @@ from datetime import datetime, timedelta
 from cloud18_ap_analysis import load_data, load_stages, plot_data
 
 # -50C data
-T = -50
+T = -25
 time_range = (
     datetime(2025, 9, 24, 0, 0, 0),
     datetime(2025, 9, 28, 0, 0, 0),
+)
+time_range = (
+    datetime(2025, 9, 28, 0, 0, 0),
+    datetime(2025, 10, 3, 0, 0, 0),
 )
 
 file_name_temp = rf"C:\Users\c7441399\Documents\CLOUD18\AP_run\{T}C\results\temp_dew_frost_{T}C.csv"
@@ -50,6 +54,7 @@ plot_data(
     interactive=True,
     stages="onlytype",
     fan_speed_data=data_fan,
+    yscale="linear",
 )
 
 # -25C data

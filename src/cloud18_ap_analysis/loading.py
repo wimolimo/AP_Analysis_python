@@ -38,22 +38,16 @@ def _unix_seconds_to_datetime(value):
     return datetime.utcfromtimestamp(round(value))
 
 
-def _utcify_datetime(value):
-    if isinstance(value, datetime):
-        return value
-    return value
-
 def _filter_time_range_dt(timestamps, time_range):
     """Return boolean mask for optional datetime range."""
     if time_range is None:
         return np.ones(len(timestamps), dtype=bool)
 
-    start, stop = (_utcify_datetime(time_range[0]), _utcify_datetime(time_range[1]))
+    start, stop = time_range
     mask = []
 
     for t in timestamps:
         if isinstance(t, datetime):
-            t = _utcify_datetime(t)
             mask.append(start <= t <= stop)
         else:
             mask.append(False)
@@ -107,20 +101,36 @@ def _timestamps_to_unix_ms(series: pd.Series, preferred_format: str | None = Non
 
 
 def load_data(filepath: str | Path, time_range=None):
-    """Load one of the data formats used by the CLOUD18 analysis.
-
-    SMPS data are intentionally not supported in this first Python version.
-    """
+    """Load one of the data formats used by the CLOUD18 analysis."""
     filepath = Path(filepath)
+
     with filepath.open("r", encoding="utf-8", errors="replace") as f:
         first_line = f.readline().strip()
 
-    if first_line.lower().startswith("numberofheaderrows"):
-        return _load_custom_format(filepath, first_line, time_range)
-    if first_line.lower().startswith("number of header rows"):
+    # SMPS and PTR trace files can both declare a number of header rows.
+    # Identify SMPS explicitly by filename before inspecting custom headers.
+    if "smps" in filepath.name.lower():
         return load_smps_format(filepath, first_line, time_range)
+
+    # A PTR trace file has a declared header count and a table header
+    # containing both Time and unixTime.
+    normalized = first_line.lower().replace("\t", " ")
+    if "number of header rows" in normalized:
+        try:
+            read_trace_header(str(filepath))
+        except ValueError:
+            pass
+        else:
+            return load_trace_format(filepath, time_range)
+
+    # Fall back to the older generic custom format.
+    normalized = first_line.lower().replace(" ", "").replace("\t", "")
+    if normalized.startswith("numberofheaderrows"):
+        return _load_custom_format(filepath, first_line, time_range)
+
     if filepath.name.startswith("AP"):
         return _load_ap_format(filepath, time_range)
+
     return _load_normal_format(filepath, time_range)
 
 
@@ -356,22 +366,20 @@ def oxygen_count(formula: str) -> float:
     return float(counts.get("O", 0))
 
 def _ensure_datetimes(time_range: Tuple[datetime, datetime]) -> Tuple[datetime, datetime]:
+    """Validate a UTC time range represented by naive datetime objects."""
     if (not isinstance(time_range, tuple)) or len(time_range) != 2:
         raise TypeError("time_range must be a tuple of two datetime objects")
     t0, t1 = time_range
     if not isinstance(t0, datetime) or not isinstance(t1, datetime):
         raise TypeError("time_range must contain datetime objects only")
-    if t0.tzinfo is None:
-        t0 = t0.replace(tzinfo=timezone.utc)
-    if t1.tzinfo is None:
-        t1 = t1.replace(tzinfo=timezone.utc)
+    if t0.tzinfo is not None or t1.tzinfo is not None:
+        raise ValueError("Use timezone-naive datetime objects; CLOUD18 times are UTC.")
     return t0, t1
 
 
 def _as_unix_seconds(dt: datetime) -> float:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
+    """Convert a naive UTC datetime to Unix seconds."""
+    return calendar.timegm(dt.utctimetuple()) + dt.microsecond / 1_000_000.0
 
 def _detect_and_skip_header_rows(path: str) -> int:
     n_header_rows = 0
@@ -546,6 +554,59 @@ def read_trace_header(path: str) -> dict:
     }
 
 
+def load_trace_format(filepath: str | Path, time_range=None):
+    """Load a PTR trace export as a normal Dataset.
+
+    The trace header is detected using ``read_trace_header``. Trace
+    ``unixTime`` values are seconds since the Unix epoch and are converted
+    to milliseconds because Channel.time uses milliseconds.
+    """
+    filepath = Path(filepath)
+    print(f"Loading trace data from {filepath}")
+
+    header = read_trace_header(str(filepath))
+    unix_col = header["unix_col"]
+    intensity_cols = header["intensity_cols"]
+
+    df = pd.read_csv(
+        filepath,
+        skiprows=header["skiprows"],
+        sep=header["sep"],
+        engine="c",
+        usecols=[unix_col] + intensity_cols,
+        na_values=["NaN", "nan", ""],
+    )
+
+    unix_seconds = pd.to_numeric(
+        df[unix_col], errors="coerce"
+    ).to_numpy(dtype=float)
+
+    time_ms = unix_seconds * 1000.0
+
+    mask = np.isfinite(time_ms)
+    if time_range is not None:
+        mask &= _range_mask(time_ms, time_range)
+
+    channels = {}
+    for name in intensity_cols:
+        values = pd.to_numeric(
+            df[name], errors="coerce"
+        ).to_numpy(dtype=float)
+
+        channels[str(name)] = Channel(
+            str(name),
+            time_ms[mask],
+            values[mask],
+        )
+
+    print(
+        f"Loaded {len(channels)} trace channels "
+        f"with {int(np.count_nonzero(mask))} time points"
+    )
+
+    return Dataset(channels)
+
+
 def read_trace_table(path: str) -> pd.DataFrame:
     header = read_trace_header(path)
     df = pd.read_csv(
@@ -559,7 +620,8 @@ def read_trace_table(path: str) -> pd.DataFrame:
     df[header["unix_col"]] = pd.to_numeric(df[header["unix_col"]], errors="coerce")
     for c in header["intensity_cols"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-        df = df.dropna(subset=[header["unix_col"]])
+
+    df = df.dropna(subset=[header["unix_col"]])
     return df
 
 def read_trace_timeseries(
@@ -626,7 +688,7 @@ def read_trace_timeseries(
 
     out = pd.concat(chunks, ignore_index=True)
 
-    parsed_time = pd.to_datetime(out[time_col], errors="coerce", utc=True)
+    parsed_time = pd.to_datetime(out[time_col], errors="coerce")
     if parsed_time.notna().any():
         out[time_col] = parsed_time
 

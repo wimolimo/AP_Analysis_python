@@ -19,6 +19,7 @@ def load_data_old(filepath: str | Path):
 
 
 def merge_log_files(filepaths, output_path):
+    """Concatenate text log files in order into one output file."""
     with open(output_path, "w", encoding="utf-8") as out:
         for path in filepaths:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
