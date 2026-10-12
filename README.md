@@ -105,3 +105,50 @@ CLOUD18_AP_Analysis/
 ├── README.md
 └── .gitignore
 ```
+
+
+## Concentration units
+
+Both `scripts/run_plotting.py` and `scripts/run_temp_dep.py` have a
+`concentration_unit` setting near the top:
+
+```python
+concentration_unit = "molecules/cm3"  # or "native" to restore mixing-ratio units
+pressure_pa = 101325.0          # standard atmospheric pressure
+```
+
+The shared `cloud18_ap_analysis.units` module converts copies of the loaded
+channels. `run_plotting` converts O3 (source ppbv) and HO2/OH/RO2 (source pptv);
+`temp_dep` converts the selected compound traces and HO2 before calculating
+interval means, SEMs, and the precursor-times-HO2 product. AP and IP always
+use pptv (1000 times the VOCUS file's ppbv values), including the AP colorbar.
+
+Conversion uses `mixing_fraction * pressure_pa / (R * temperature_K) * 1e-6 * N_A`
+with Avogadro's constant `N_A = 6.02214076e23 molecules/mol`.
+Measured `TE_Calib_3` temperature is linearly interpolated onto each channel's
+UTC timestamps before smoothing or averaging. No extrapolation is performed:
+points outside condition coverage become NaN. Temperature and pressure are
+treated as known; their uncertainties are not propagated. The source files
+and loaded datasets are not changed.
+
+For `temp_dep`, each temperature run provides `temperature_path` and optionally
+`temperature_channel` (default `TE_Calib_3`). Alternatively, provide an explicit
+constant `temperature_c`. These inputs are only used in molecules/cm3 mode.
+
+Time traces default to log for molecules/cm3 and linear for native pptv/ppbv.
+Override with `concentration_scale` in `run_plotting`, or `trace_yscale` in
+`run_temp_dep` (passed as `yscale` to `temp_dep`). Temperature and AP/IP panels
+remain linear; SMPS diameter retains its logarithmic axis. Nonpositive
+concentrations cannot be displayed on logarithmic axes.
+
+Kinetic axes are logarithmic for molecules/cm3: y is molecules/cm3 and x is (molecules/cm3)^2.
+Native mode uses linear axes in pptv and pptv^2. Axis scaling does not change
+the original-space ODR fit; nonpositive values cannot appear on log axes. The fit uses an exact all-zero check so valid nonzero
+values are accepted; regression results include `slope_unit`. Tests verify
+that equivalent data expressed in either unit give equivalent slopes and
+uncertainties without manual fit scaling.
+
+Returned mean-table column names remain source identifiers (for example
+`HO2_ppt`), even in molecules/cm3 mode; `means.attrs["concentration_unit"]` records
+the chosen mode. AP color data have explicit `AP_pptv`, `AP_pptv_sem`, and
+`AP_pptv_n_points` columns. Column names do not infer conversion automatically.

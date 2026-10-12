@@ -23,6 +23,7 @@ def plot_time_traces(
     ylabel: str = "Signal [cps]",
     ylims=None,
     yscale: str = "log",
+    fan_speed_path: str | Path | None = None,
 ):
     """
     Plot time traces of selected compounds.
@@ -68,6 +69,11 @@ def plot_time_traces(
     yscale
         Y-axis scale: "log" (default) or "linear". Log scales display
         only positive values.
+
+    fan_speed_path
+        Optional fan-speed CSV file (same format as run_plotting). Load
+        Fan_BOT_Speed for time_range and shade periods below 50 percent gray.
+        Applies to overlay and stacked traces. None disables shading.
     """
 
     # Load only the requested time period
@@ -94,6 +100,11 @@ def plot_time_traces(
             + available
         )
 
+    fan_speed_data = (
+        load_data(fan_speed_path, time_range)
+        if fan_speed_path is not None else None
+    )
+
     plot_data(
         data,
         channels=compounds,
@@ -104,6 +115,7 @@ def plot_time_traces(
         ylabels=ylabel,
         smoothing=smoothing,
         stages=stages,
+        fan_speed_data=fan_speed_data,
         savepath=savepath,
         interactive=interactive,
     )

@@ -720,7 +720,9 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
                   stages=None, fan_speed_data=None, yscale="log"):
     """Plot multiple Dataset and/or SMPSData objects in stacked panels.
 
-    Normal Dataset panels become line plots.
+    Normal Dataset panels become line plots. ``yscale`` can be one scale
+    string for all panels or a list of scales (one per dataset). Both axes
+    of a dual-axis panel use its scale; SMPS diameters always use log.
 
     SMPSData panels become particle-size heatmaps using:
         SMPSData.time
@@ -739,6 +741,9 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
     resolved = [load_data(d) if isinstance(d, (str, Path)) else d for d in datasets]
 
     n = len(resolved)
+    panel_scales = [yscale] * n if isinstance(yscale, str) else list(yscale)
+    if len(panel_scales) != n:
+        raise ValueError("yscale must be a scale string or one scale per dataset")
     if n == 0:
         return None
 
@@ -762,7 +767,8 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
 
     for i, (data, spec) in enumerate(zip(resolved, specs)):
         ax = axes[i]
-        _style_axis(ax, yscale=yscale)
+        panel_scale = panel_scales[i]
+        _style_axis(ax, yscale=panel_scale)
 
         if i == n - 1:
             ax.set_xlabel("Time (UTC)")
@@ -827,7 +833,7 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
                 _plot_on_axis(ax, left, colors)
 
                 ax2 = ax.twinx()
-                _style_axis(ax2, yscale=yscale)
+                _style_axis(ax2, yscale=panel_scale)
                 ax2.set_ylabel(right_ylabel or "")
 
                 _plot_on_axis(ax2, right, colors, len(left))
