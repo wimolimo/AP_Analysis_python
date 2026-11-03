@@ -53,6 +53,20 @@ class TestConcentrationUnits(unittest.TestCase):
         np.testing.assert_allclose(out.values[1:4],
             1e-12 * 101325 / (GAS_CONSTANT * np.array([273.15, 283.15, 293.15])) * 1e-6 * AVOGADRO_CONSTANT, atol=0)
 
+    def test_condition_gap_limit(self):
+        minute = 60_000
+        ch = Channel("x", np.array([0, 15, 31]) * minute, [1, 1, 1])
+        for condition_name, condition_values in (
+            ("temperature_c", [0, 20]), ("pressure_pa", [97000, 98000]),
+        ):
+            conditions = dict(temperature_c=0, pressure_pa=97000)
+            conditions[condition_name] = Channel(
+                condition_name, np.array([0, 31]) * minute, condition_values)
+            out = convert_channel_concentration(
+                ch, "pptv", "molecules/cm3", **conditions)
+            self.assertTrue(np.isfinite(out.values[[0, 2]]).all())
+            self.assertTrue(np.isnan(out.values[1]))
+
     def test_panel_scales_and_override(self):
         self.assertEqual(concentration_yscale("native"), "linear")
         self.assertEqual(concentration_yscale("molecules/cm3"), "log")
