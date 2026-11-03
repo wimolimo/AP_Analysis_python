@@ -8,10 +8,12 @@ from pathlib import Path
 from .loading import load_data
 from .stages import load_stages
 from .plotting import plot_data
+from .units import (convert_dataset_concentrations, concentration_label,
+                    concentration_yscale, validate_concentration_unit, STANDARD_PRESSURE_PA)
 
 
 def plot_time_traces(
-    trace_path: str | Path,
+    trace_path: str | Path | list[str | Path],
     compounds: list[str],
     time_range: tuple[datetime, datetime],
     stages_path: str | Path | None = None,
@@ -20,10 +22,18 @@ def plot_time_traces(
     interactive: bool = True,
     stages: str | bool | None = "onlytype",
     stacked: bool = False,
-    ylabel: str = "Signal [cps]",
+    ylabel: str | None = None,
     ylims=None,
-    yscale: str = "log",
+    yscale: str | None = None,
     fan_speed_path: str | Path | None = None,
+    important_time_ranges=None,
+    label_intervals: bool = False,
+    concentration_unit: str = "native",
+    source_unit: str = "pptv",
+    temperature_path: str | Path | None = None,
+    temperature_channel: str = "TE_Calib_3",
+    temperature_c=None,
+    pressure_pa=STANDARD_PRESSURE_PA,
 ):
     """
     Plot time traces of selected compounds.
@@ -31,7 +41,9 @@ def plot_time_traces(
     Parameters
     ----------
     trace_path
-        Path to the trace CSV file.
+        Path to one trace CSV, or a nonempty list/tuple of files with the same
+        channels. Files are combined chronologically before conversion/smoothing;
+        duplicate timestamps use the last listed file (no double counting).
 
     compounds
         Compound/channel names that should be shown.
@@ -61,20 +73,50 @@ def plot_time_traces(
         If True, each compound gets its own panel.
 
     ylabel
-        Label for the y-axis.
+        Optional axis-label override. None builds a label from the concentration unit.
 
     ylims
         Optional y-axis limits.
 
     yscale
-        Y-axis scale: "log" (default) or "linear". Log scales display
-        only positive values.
+        None chooses log for molecules/cm3 and linear for native mixing ratios.
+        Explicit "log" or "linear" overrides this. Log displays positive values only.
 
     fan_speed_path
         Optional fan-speed CSV file (same format as run_plotting). Load
         Fan_BOT_Speed for time_range and shade periods below 50 percent gray.
         Applies to overlay and stacked traces. None disables shading.
+        Uses a bottom strip when important_time_ranges is supplied.
+
+    important_time_ranges
+        Optional list of UTC (start, stop) datetime pairs to shade. None hides
+        intervals. Visual references only; no interval averaging is performed.
+
+    label_intervals
+        True adds t_i labels in original input order on the first subplot only
+        (or the overlay axes); False shows shading only.
+    concentration_unit
+        "native" (default) keeps the input mixing ratio; "molecules/cm3"
+        converts selected compounds before smoothing using the shared temp_dep conversion.
+
+    source_unit
+        Input concentration unit: "pptv" (default) or "ppbv"; "ppt"/"ppb"
+        aliases are accepted. Input must be calibrated concentration, not counts.
+
+    temperature_path, temperature_channel
+        Optional temperature CSV and channel (default "TE_Calib_3", Celsius).
+        Measurements are interpolated to trace timestamps without extrapolation.
+        Takes precedence over temperature_c; only loaded for conversion.
+
+    temperature_c
+        Constant Celsius temperature or temperature Channel, required for conversion
+        if temperature_path is absent. Missing temperature coverage yields NaN.
+
+    pressure_pa
+        Pressure in Pa (constant or Channel); default 101325 Pa, normal pressure.
     """
+
+    validate_concentration_unit(concentration_unit)
 
     # Load only the requested time period
     data = load_data(trace_path, time_range)
@@ -100,6 +142,18 @@ def plot_time_traces(
             + available
         )
 
+    if concentration_unit == "molecules/cm3":
+        if temperature_path is not None:
+            temperature_c = load_data(temperature_path)[temperature_channel]
+        data = convert_dataset_concentrations(
+            data, {name: source_unit for name in compounds}, concentration_unit,
+            temperature_c=temperature_c, pressure_pa=pressure_pa,
+        )
+    if ylabel is None:
+        native_label = {"ppt": "pptv", "ppb": "ppbv"}.get(source_unit, source_unit)
+        ylabel = "Concentration [" + concentration_label(concentration_unit, native_label) + "]"
+    yscale = concentration_yscale(concentration_unit, yscale)
+
     fan_speed_data = (
         load_data(fan_speed_path, time_range)
         if fan_speed_path is not None else None
@@ -116,6 +170,8 @@ def plot_time_traces(
         smoothing=smoothing,
         stages=stages,
         fan_speed_data=fan_speed_data,
+        important_time_ranges=important_time_ranges,
+        label_intervals=label_intervals,
         savepath=savepath,
         interactive=interactive,
     )

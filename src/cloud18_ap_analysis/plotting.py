@@ -8,11 +8,13 @@ import calendar
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from matplotlib.transforms import Bbox
 from matplotlib.colors import ListedColormap, LogNorm#
 import matplotlib.patches as mpatches
 import itertools
 
 from .models import Channel, Dataset, SMPSData
+from . import config as cfg
 from .loading import load_data
 from .stages import get_stages
 from .config import DPI, PAPER_LINE_COLORS, PAPER_UNSTACKED_SIZE, STAGE_SETTINGS
@@ -239,7 +241,56 @@ def _print_stage_details(stage):
     print("\n" + "\n".join(lines))
 
 
-def _draw_stages(ax, stages, xlims=None, print_details=False):
+def _interval_label(index):
+    return rf"$t_{{{int(index)}}}$"
+
+
+def _shade_intervals(ax, ranges, label_intervals=False, xlims=None, shade=True):
+    """Shared t_i styling; preserve numbering when cropping the time window."""
+    for index, (start, stop) in enumerate(ranges or [], 1):
+        if not isinstance(start, datetime) or not isinstance(stop, datetime):
+            raise TypeError("Intervals must contain datetime pairs")
+        if start.tzinfo is not None or stop.tzinfo is not None or stop < start:
+            raise ValueError("Intervals must be ordered timezone-naive UTC pairs")
+        left, right = start, stop
+        if xlims is not None:
+            left, right = max(start, xlims[0]), min(stop, xlims[1])
+            if right < left:
+                continue
+        if shade:
+            patch = ax.axvspan(left, right, color=cfg.IMPORTANT_RANGE_COLOR,
+                              alpha=cfg.IMPORTANT_RANGE_ALPHA, linewidth=0, zorder=0)
+            patch.set_gid("averaging-interval")
+        if label_intervals:
+            ax.text(left + (right-left)/2, 0.85, _interval_label(index),
+                    transform=ax.get_xaxis_transform(), ha="center", va="top",
+                    fontsize=cfg.PAPER_LABEL_SIZE,
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1),
+                    clip_on=True, zorder=5)
+
+
+def _draw_time_context(ax, ranges=None, label_intervals=False, xlims=None,
+                       fan_speed_data=None, heatmap=False):
+    _shade_intervals(ax, ranges, label_intervals, xlims=xlims, shade=not heatmap)
+    if fan_speed_data is not None and not heatmap:
+        strip = bool(ranges)
+        patches = _draw_fan_speed_shading(
+            ax, fan_speed_data, ymax=0.035 if strip else 1.0,
+            alpha=0.65 if strip else 0.2, zorder=4 if strip else 0,
+        ) or []
+        for patch in patches:
+            patch.set_gid("fan-strip" if strip else "fan-shading")
+
+
+def _add_fan_legend(ax, loc="upper right"):
+    patches = [p for p in ax.patches if p.get_gid() in {"fan-strip", "fan-shading"}]
+    if patches:
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend([mpatches.Patch(color="gray", alpha=patches[0].get_alpha())] + handles,
+                  ["Fan speed 12%"] + labels, loc=loc)
+
+
+def _draw_stages(ax, stages, xlims=None, print_details=False, label_y=None):
     """
     Draw stage markers and labels.
 
@@ -249,6 +300,8 @@ def _draw_stages(ax, stages, xlims=None, print_details=False):
     - Lines and labels are clipped to the axes during zooming/panning.
     - Stages without a valid timestamp are skipped.
     """
+    if label_y is None:
+        label_y = 0.05 if any(p.get_gid() == "fan-strip" for p in ax.patches) else 0.02
     stage_data = get_stages()
 
     if not stage_data:
@@ -288,7 +341,7 @@ def _draw_stages(ax, stages, xlims=None, print_details=False):
         # when the y-axis is zoomed or rescaled.
         ax.text(
             stage_time,
-            0.02,
+            label_y,
             label,
             transform=ax.get_xaxis_transform(),
             rotation=90,
@@ -307,9 +360,11 @@ def _draw_stages(ax, stages, xlims=None, print_details=False):
                     print(f"  {detail}")
 
 
-def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=50):
+def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=50,
+                            ymin=0.0, ymax=1.0, alpha=0.2, zorder=0):
     """
-    Draws shaded gray regions on an axis where fan speed is above a threshold.
+    Draws shaded gray regions on an axis where fan speed is below a threshold.
+    ymin/ymax are axis-relative heights; defaults preserve full-height shading.
     This version uses pure NumPy to find the contiguous blocks.
 
     Args:
@@ -344,6 +399,7 @@ def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=5
     start_indices = np.where(diffs == 1)[0]
     end_indices = np.where(diffs == -1)[0]
 
+    patches = []
     # 4. Draw a shaded region for each start/end pair
     for start_idx, end_idx in zip(start_indices, end_indices):
         # Get the corresponding start and end times
@@ -355,20 +411,24 @@ def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=5
         else:
             end_time = time_as_datetime[-1]
 
-        ax.axvspan(
+        patches.append(ax.axvspan(
             start_time,
             end_time,
             color='gray',
-            alpha=0.2,
-            zorder=0,  # Draw behind the plot lines
+            ymin=ymin, ymax=ymax,
+            alpha=alpha,
+            zorder=zorder,
             linewidth=0
-        )
+        ))
+    return patches
 
 
 def _style_axis(ax, yscale="linear"):
     ax.grid(True, alpha=0.35)
     ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    ax.spines["right"].set_visible(True)
+    ax.spines["right"].set_color("black")
+    ax.spines["right"].set_linewidth(ax.spines["left"].get_linewidth())
     ax.tick_params(width=0.75, length=3)
     ax.set_yscale(yscale)
 
@@ -517,9 +577,18 @@ def _plot_smps_on_axis(fig, ax, smps, ylabel=None, cbar_label=None,
         norm=norm,
     )
 
-    cax = ax.inset_axes([1.012, 0.0, 0.025, 1.0], transform=ax.transAxes)
-    cax.set_in_layout(False)
+    # Keep every shared time axis in the same GridSpec column. Position only
+    # the colorbar outside the SMPS panel; never shrink that panel separately.
+    cax = fig.add_axes(ax.get_position().bounds)
+    cax.set_subplotspec(ax.get_subplotspec())
 
+    def colorbar_position(colorbar_ax, renderer):
+        panel = ax.get_position()
+        figure_width = fig.get_size_inches()[0]
+        return Bbox.from_bounds(panel.x1 + 0.06 / figure_width, panel.y0,
+                                0.18 / figure_width, panel.height)
+
+    cax.set_axes_locator(colorbar_position)
     cbar = fig.colorbar(mesh, cax=cax)
     cbar.set_label(cbar_label or "dN/dlogDp [cm⁻³]")
 
@@ -535,7 +604,8 @@ def _plot_smps_on_axis(fig, ax, smps, ylabel=None, cbar_label=None,
 
 def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
                    interactive=False, xlims=None, ylims=None, smoothing=None,
-                   stages=None, fan_speed_data=None, ylabel=None, yscale="log"):
+                   stages=None, fan_speed_data=None, ylabel=None, yscale="log",
+                   important_time_ranges=None, label_intervals=False):
     """Plot selected channels from one Dataset."""
     channels = _maybe_smooth(channels, smoothing)
     savepath, tag = _prepare_savepath(savepath, smoothing)
@@ -556,12 +626,13 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
         for i, (ax, ch) in enumerate(zip(axes, channels)):
             ax.plot(_channel_datetimes(ch), ch.values, color=colors[i])
 
-            if fan_speed_data is not None:
-                _draw_fan_speed_shading(ax, fan_speed_data)
+            _draw_time_context(ax, important_time_ranges, label_intervals and i == 0, xlims,
+                               fan_speed_data)
 
-            ax.set_ylabel(ch.name)
+            ax.set_ylabel(f"{ch.name}\n{ylabel}" if ylabel else ch.name)
             ax.set_title(title if i == 0 else "")
             _style_axis(ax, yscale=yscale)
+            ax.grid(True, which="both", axis="y", alpha=0.35)
 
             if i == len(channels) - 1:
                 ax.set_xlabel("Time (UTC)")
@@ -595,8 +666,8 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
     else:
         fig, ax = plt.subplots(figsize=PAPER_UNSTACKED_SIZE)
 
-        if fan_speed_data is not None:
-            _draw_fan_speed_shading(ax, fan_speed_data)
+        _draw_time_context(ax, important_time_ranges, label_intervals, xlims,
+                           fan_speed_data)
 
         _plot_on_axis(ax, channels, colors)
         ax.set_title(title)
@@ -606,6 +677,7 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
             ax.set_ylabel(ylabel)
 
         _style_axis(ax, yscale=yscale)
+        ax.grid(True, which="both", axis="y", alpha=0.35)
         ax.legend(loc="upper right")
 
         if xlims:
@@ -616,11 +688,17 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
         if stages is not None:
             _draw_stages(ax, stages, xlims, print_details=True)
 
+    _add_fan_legend(axes[0] if stacked else ax)
+
     _configure_save_and_present(fig, interactive, savepath)
     return None
 
 
 def _configure_save_and_present(fig, interactive, savepath=None):
+    # Preserve existing layout engines, especially constrained-layout colorbars.
+    if fig.get_layout_engine() is None:
+        fig.tight_layout()
+
     if savepath is not None:
         path = Path(savepath)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -658,8 +736,14 @@ def plot_channel(ch, ylabel=None, title=None, savepath=None, interactive=False,
 
 def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
               interactive=False, xlims=None, ylims=None, ylabels=None,
-              smoothing=None, stages=None, fan_speed_data=None, yscale="log"):
-    """Load or plot CLOUD18 data using the package's standard UTC time axis."""
+              smoothing=None, stages=None, fan_speed_data=None, yscale="log",
+                  important_time_ranges=None, label_intervals=False):
+    """Plot on UTC axes. important_time_ranges optionally shades datetime pairs.
+
+    label_intervals=True adds t_i tags in input order. None/[] disables intervals.
+    Intervals are visual references only. Fan shading becomes a bottom strip
+    when intervals are supplied. SMPS receives tags only, preserving heatmap colors.
+    """
     _reset_color_cycle()
     if isinstance(data_or_path, (list, tuple)):
         return plot_datasets(
@@ -667,6 +751,7 @@ def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
             interactive=interactive, xlims=xlims, ylims=ylims,
             ylabels=ylabels, smoothing=smoothing, stages=stages,
             fan_speed_data=fan_speed_data, yscale=yscale,
+            important_time_ranges=important_time_ranges, label_intervals=label_intervals,
         )
     data = load_data(data_or_path) if isinstance(data_or_path, (str, Path)) else data_or_path
 
@@ -682,7 +767,8 @@ def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
             smoothing=smoothing,
             stages=stages,
             fan_speed_data=fan_speed_data,
-            yscale=yscale
+            yscale=yscale,
+            important_time_ranges=important_time_ranges, label_intervals=label_intervals,
         )
 
     selected = _resolve_channels(data, channels)
@@ -696,6 +782,7 @@ def plot_data(data_or_path, channels=None, stacked=False, savepath=None,
         interactive=interactive, xlims=xlims, ylims=ylims,
         smoothing=smoothing, stages=stages, fan_speed_data=fan_speed_data,
         ylabel=ylabel, yscale=yscale,
+        important_time_ranges=important_time_ranges, label_intervals=label_intervals,
     )
 
 
@@ -717,7 +804,8 @@ def plot_all(filepath, stacked=False, savepath=None, interactive=False,
 
 def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
                   xlims=None, ylims=None, ylabels=None, smoothing=None,
-                  stages=None, fan_speed_data=None, yscale="log"):
+                  stages=None, fan_speed_data=None, yscale="log",
+                  important_time_ranges=None, label_intervals=False):
     """Plot multiple Dataset and/or SMPSData objects in stacked panels.
 
     Normal Dataset panels become line plots. ``yscale`` can be one scale
@@ -773,8 +861,8 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
         if i == n - 1:
             ax.set_xlabel("Time (UTC)")
 
-        if fan_speed_data is not None and not _is_smps_data(data):
-            _draw_fan_speed_shading(ax, fan_speed_data)
+        _draw_time_context(ax, important_time_ranges, label_intervals and i == 0, xlims,
+                           fan_speed_data, heatmap=_is_smps_data(data))
 
         panel_ylims = ylims[i] if isinstance(ylims, list) and i < len(ylims) else ylims
 
@@ -834,6 +922,11 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
 
                 ax2 = ax.twinx()
                 _style_axis(ax2, yscale=panel_scale)
+                # Only the primary (left) axis supplies grid lines.
+                ax2.grid(False, which="both", axis="both")
+                ax2.spines["right"].set_visible(True)
+                ax2.spines["right"].set_color("black")
+                ax2.spines["right"].set_linewidth(ax.spines["left"].get_linewidth())
                 ax2.set_ylabel(right_ylabel or "")
 
                 _plot_on_axis(ax2, right, colors, len(left))
@@ -872,25 +965,10 @@ def plot_datasets(datasets, channels=None, savepath=None, interactive=False,
         if stages is not None:
             _draw_stages(ax, stages, xlims, print_details=(i == n - 1))
 
-    if fan_speed_data is not None:
-        ax0 = axes[0] # Target the first subplot's axis
-
-        # Check if a legend already exists on the first plot (it might be SMPS)
-        if ax0.get_legend() is not None:
-            # Get the handles and labels that are already in the legend
-            current_handles, current_labels = ax0.get_legend_handles_labels()
-
-            # Create our proxy artist for the gray area.
-            # Use the same alpha as in _draw_fan_speed_shading for consistency.
-            fan_patch = mpatches.Patch(color='gray', alpha=0.2)
-            fan_label = 'Fan Speed 12%'
-
-            # Prepend the new entry to the existing lists
-            new_handles = [fan_patch] + current_handles
-            new_labels = [fan_label] + current_labels
-
-            # Redraw the legend on the first subplot with the combined list
-            ax0.legend(new_handles, new_labels, loc="upper left")
+    for ax in axes:
+        if any(p.get_gid() in {"fan-strip", "fan-shading"} for p in ax.patches):
+            _add_fan_legend(ax, loc="upper left")
+            break
 
     if smoothing is not None:
         tag = _smoothing_label(smoothing)

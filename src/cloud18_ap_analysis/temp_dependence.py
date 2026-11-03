@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 from scipy.odr import Model, ODR, RealData
@@ -22,7 +23,8 @@ from scipy.stats import t as student_t
 from . import config as cfg
 from .loading import load_data, read_trace_timeseries
 from .models import Channel
-from .plotting import _draw_stages
+from .plotting import (_draw_stages, _draw_fan_speed_shading,
+                       _shade_intervals, _interval_label)
 from .stages import load_stages
 from .units import (convert_channel_concentration, concentration_label,
                     concentration_yscale, validate_concentration_unit, STANDARD_PRESSURE_PA)
@@ -64,33 +66,6 @@ def _style_axis(ax: plt.Axes) -> None:
     ax.spines["right"].set_visible(False)
     ax.grid(False)
     ax.tick_params(direction="out")
-
-
-def _interval_label(index: int) -> str:
-    return rf"$t_{{{int(index)}}}$"
-
-
-def _shade_intervals(
-    ax: plt.Axes, ranges: Sequence[TimeRange], label_intervals: bool = False,
-) -> None:
-    """Shade averaging intervals and optionally label them with matching tags."""
-    for index, (start, stop) in enumerate(ranges, start=1):
-        ax.axvspan(
-            start,
-            stop,
-            color=cfg.IMPORTANT_RANGE_COLOR,
-            alpha=cfg.IMPORTANT_RANGE_ALPHA,
-            linewidth=0,
-            zorder=0,
-        )
-        if label_intervals:
-            ax.text(
-                start + (stop - start) / 2, 0.85, _interval_label(index),
-                transform=ax.get_xaxis_transform(),
-                ha="center", va="top", fontsize=cfg.PAPER_LABEL_SIZE,
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1),
-                clip_on=True, zorder=5,
-            )
 
 
 def calculate_interval_means(
@@ -207,7 +182,7 @@ def add_reaction_partner_interval_means(
 ) -> tuple[pd.DataFrame, str]:
     """Add reaction-partner means and the precursor × partner kinetic quantity.
 
-    Currently ``reaction_partner="HO2"`` is implemented. The selection is kept
+    Reaction partners ``"HO2"`` and ``"RO2"`` are implemented. The selection is kept
     explicit so additional partners such as O3 can later be added without
     changing the public ``temp_dep`` interface.
 
@@ -216,7 +191,7 @@ def add_reaction_partner_interval_means(
     means:
         AP interval-mean table.
     horus_path:
-        Path to the HORUS HOx/ROx file used when the partner is HO2.
+        Path to the HORUS HOx/ROx file used for either partner.
     time_range:
         Overall UTC loading interval.
     important_time_ranges:
@@ -224,7 +199,7 @@ def add_reaction_partner_interval_means(
     precursor_compound:
         AP precursor column to multiply by the partner mean.
     reaction_partner:
-        Chemical reaction partner. Currently only ``"HO2"`` is supported.
+        Chemical reaction partner: ``"HO2"`` or ``"RO2"``.
 
     Returns
     -------
@@ -234,14 +209,15 @@ def add_reaction_partner_interval_means(
     """
     partner = reaction_partner.strip().upper()
 
-    if partner == "HO2":
-        partner_channel = "HO2_ppt"
-        partner_label = "HO2"
+    partner_channels = {"HO2": "HO2_ppt", "RO2": "RO2_crosstalk_ppt"}
+    if partner in partner_channels:
+        partner_channel = partner_channels[partner]
+        partner_label = partner
         partner_data = load_data(horus_path, time_range)
     else:
         raise NotImplementedError(
             f"Reaction partner {reaction_partner!r} is not implemented yet. "
-            "Currently supported: 'HO2'."
+            "Currently supported: 'HO2', 'RO2'."
         )
 
     if partner_channel not in partner_data.channels:
@@ -292,8 +268,9 @@ def plot_kinetic_relationship(
     label_intervals: bool = False,
     color_by_ap: bool = False,
     concentration_unit: Optional[str] = None,
+    fit_intercept: bool = True,
 ) -> tuple[plt.Figure, plt.Axes, pd.DataFrame]:
-    """Plot interval means with errors and fit zero-intercept ODR models.
+    """Plot interval means with errors and fit linear ODR models.
 
     The legend reports each slope k plus/minus its ODR standard error (1 SE).
     Both x and y interval-mean uncertainties are used in the original-space fit.
@@ -324,10 +301,15 @@ def plot_kinetic_relationship(
         Unit of the supplied means (no conversion here). If None, read their
         concentration_unit attribute, falling back to native pptv.
 
+    fit_intercept : bool, default True
+        True fits y = k*x + b; False fixes b=0. Both x/y errors are used.
+        A free intercept needs at least three points with distinct x values;
+        fixed zero needs at least two points and a nonzero x.
+
     Returns
     -------
     figure, axis, regression_results
-        The combined kinetic plot and a table containing the zero-intercept
+        The combined kinetic plot and a table containing the linear
         ODR slope, its standard error, goodness-of-fit values and the number of
         points for each temperature.
     """
@@ -358,7 +340,7 @@ def plot_kinetic_relationship(
     colors = cfg.PAPER_LINE_COLORS
 
     ap_norm = None
-    ap_cmap = plt.get_cmap("plasma").copy()
+    ap_cmap = plt.get_cmap("turbo").copy()
     ap_cmap.set_bad("0.6")
     missing_ap = False
     if color_by_ap:
@@ -382,7 +364,8 @@ def plot_kinetic_relationship(
             grouped_means["temperature"] == temperature,
             [x_column, y_compound, x_error_column, y_error_column]
             + (["range_index"] if label_intervals else [])
-            + (["AP_pptv"] if color_by_ap else []),
+            + (["AP_pptv"] if color_by_ap else [])
+            + (["interval_label"] if "interval_label" in grouped_means.columns else []),
         ].replace([np.inf, -np.inf], np.nan).dropna(
             subset=[x_column, y_compound, x_error_column, y_error_column]
             + (["range_index"] if label_intervals else [])
@@ -435,31 +418,40 @@ def plot_kinetic_relationship(
                     label=str(temperature), linewidth=cfg.PAPER_LINE_WIDTH)
 
         if label_intervals:
-            for xi, yi, interval_index in zip(x, y, valid["range_index"]):
+            for xi, yi, interval_tag in zip(x, y, valid["interval_label"] if "interval_label" in valid else valid["range_index"].map(_interval_label)):
                 ax.annotate(
-                    _interval_label(interval_index), (xi, yi),
+                    interval_tag, (xi, yi),
                     xytext=(5, 5), textcoords="offset points",
                     color=color, fontsize=cfg.PAPER_LABEL_SIZE,
                     ha="left", va="bottom", zorder=5,
                 )
 
-        if len(valid) < 2 or not np.any(x != 0.0):
-            print(
-                f"Warning: at least two points and a non-zero x value are "
-                f"required for an ODR fit at {temperature}."
-            )
+        minimum_points = 3 if fit_intercept else 2
+        identifiable = np.ptp(x) > 0 if fit_intercept else np.any(x != 0.0)
+        if len(valid) < minimum_points or not identifiable:
+            requirement = "distinct x values" if fit_intercept else "a non-zero x value"
+            print(f"Skipping ODR fit at {temperature}: need at least {minimum_points} "
+                  f"valid points and {requirement} (fit_intercept={fit_intercept}).")
             continue
 
-        def zero_intercept_model(beta: np.ndarray, x_values: np.ndarray) -> np.ndarray:
-            return beta[0] * x_values
+        def linear_model(beta: np.ndarray, x_values: np.ndarray) -> np.ndarray:
+            return beta[0] * x_values + (beta[1] if fit_intercept else 0.0)
 
-        initial_slope = float(np.dot(x, y) / np.dot(x, x))
+        if fit_intercept:
+            centered_x = x - x.mean()
+            initial_slope = float(np.dot(centered_x, y - y.mean()) / np.dot(centered_x, centered_x))
+            beta0 = [initial_slope, float(y.mean() - initial_slope * x.mean())]
+        else:
+            initial_slope = float(np.dot(x, y) / np.dot(x, x))
+            beta0 = [initial_slope]
         odr_result = ODR(
             RealData(x, y, sx=x_error, sy=y_error),
-            Model(zero_intercept_model),
-            beta0=[initial_slope],
+            Model(linear_model),
+            beta0=beta0,
         ).run()
 
+        intercept = float(odr_result.beta[1]) if fit_intercept else 0.0
+        intercept_stderr = float(odr_result.sd_beta[1]) if fit_intercept else 0.0
         slope = float(odr_result.beta[0])
         slope_stderr = float(odr_result.sd_beta[0])
         if concentration_unit == "molecules/cm3":
@@ -468,7 +460,9 @@ def plot_kinetic_relationship(
                      if positive_x.size else np.array([]))
         else:
             x_fit = np.linspace(0.0, x.max() * 1.05, 200)
-        y_fit = slope * x_fit
+        y_fit = slope * x_fit + intercept
+        if concentration_unit == "molecules/cm3":
+            y_fit = np.where(y_fit > 0, y_fit, np.nan)
 
         ax.plot(
             x_fit,
@@ -478,7 +472,7 @@ def plot_kinetic_relationship(
             zorder=2,
         )
 
-        fitted_y = slope * x
+        fitted_y = slope * x + intercept
         ss_res = float(np.sum((y - fitted_y) ** 2))
         ss_tot = float(np.sum((y - np.mean(y)) ** 2))
         centered_r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
@@ -488,7 +482,7 @@ def plot_kinetic_relationship(
             if uncentered_ss_tot > 0
             else np.nan
         )
-        degrees_of_freedom = len(valid) - 1
+        degrees_of_freedom = len(valid) - (2 if fit_intercept else 1)
         p_value = (
             float(2.0 * student_t.sf(abs(slope / slope_stderr), degrees_of_freedom))
             if degrees_of_freedom > 0 and slope_stderr > 0
@@ -499,7 +493,10 @@ def plot_kinetic_relationship(
             "temperature": temperature,
             "slope_unit": "cm3/molecule" if concentration_unit == "molecules/cm3" else "1/pptv",
             "slope": slope,
-            "intercept": 0.0,
+            "intercept": intercept,
+            "intercept_stderr": intercept_stderr,
+            "intercept_unit": "molecules/cm3" if concentration_unit == "molecules/cm3" else "pptv",
+            "fit_intercept": fit_intercept,
             "r_squared": centered_r_squared,
             "r_squared_uncentered": uncentered_r_squared,
             "p_value": p_value,
@@ -533,12 +530,23 @@ def plot_kinetic_relationship(
             + rf"$k=({k / scale:.3g} \pm {se / scale:.2g})"
             + rf"\times 10^{{{exponent}}}\ {k_unit}$"
         )
+        if fit_intercept:
+            b, b_se = result["intercept"], result["intercept_stderr"]
+            b_magnitude = max(abs(b), abs(b_se))
+            b_exponent = int(np.floor(np.log10(b_magnitude))) if np.isfinite(b_magnitude) and b_magnitude > 0 else 0
+            b_scale = 10.0 ** b_exponent
+            b_unit = (r"\mathrm{molecules\,cm^{-3}}" if concentration_unit == "molecules/cm3"
+                      else r"\mathrm{pptv}")
+            fit_labels[str(result["temperature"])] += (
+                "\n" + rf"$b=({b / b_scale:.3g} \pm {b_se / b_scale:.2g})"
+                + rf"\times 10^{{{b_exponent}}}\ {b_unit}$"
+            )
     handles, labels = ax.get_legend_handles_labels()
     labels = [fit_labels.get(label, label) for label in labels]
     if color_by_ap and missing_ap:
         handles.append(Line2D([], [], marker="o", linestyle="none", color="0.6"))
         labels.append("AP unavailable")
-    ax.legend(handles, labels, title=r"Temperature; $k \pm 1$ SE")
+    ax.legend(handles, labels, title="Temperature; fit ±1 SE")
     _style_axis(ax)
     fig.tight_layout()
 
@@ -580,6 +588,7 @@ def _plot_temperature_trace(
     label_intervals: bool = False,
     concentration_unit: str = "native",
     yscale: Optional[str] = None,
+    fan_speed_data=None,
 ) -> tuple[plt.Figure, list[plt.Axes]]:
     """Create the time-trace figure for one temperature condition."""
     plot_time = pd.to_datetime(data[time_col], errors="coerce")
@@ -587,7 +596,7 @@ def _plot_temperature_trace(
     if overlay:
         fig, ax = plt.subplots(figsize=cfg.TRACE_FIGSIZE)
         axes = [ax]
-        _shade_intervals(ax, important_time_ranges, label_intervals=label_intervals)
+        _shade_intervals(ax, important_time_ranges, label_intervals=label_intervals, xlims=time_range)
         for compound in trace_compounds:
             ax.plot(
                 plot_time,
@@ -610,7 +619,7 @@ def _plot_temperature_trace(
         )
         axes = list(axes_array[:, 0])
         for ax, compound in zip(axes, trace_compounds):
-            _shade_intervals(ax, important_time_ranges, label_intervals=label_intervals)
+            _shade_intervals(ax, important_time_ranges, label_intervals=label_intervals, xlims=time_range)
             ax.plot(plot_time, data[compound], linewidth=cfg.PAPER_LINE_WIDTH)
             ax.set_ylabel("Concentration [" + concentration_label(concentration_unit) + "]")
             ax.set_yscale(concentration_yscale(concentration_unit, yscale))
@@ -625,10 +634,21 @@ def _plot_temperature_trace(
             _style_axis(ax)
         axes[-1].set_xlabel("Time (UTC)")
 
-    for ax in axes:
+    for index, ax in enumerate(axes):
         ax.set_xlim(*time_range)
+        fan_strips = []
+        if fan_speed_data is not None:
+            fan_strips = _draw_fan_speed_shading(
+                ax, fan_speed_data, ymin=0.0, ymax=0.035, alpha=0.65, zorder=4,
+            ) or []
+        if fan_strips and index == 0:
+            handles, labels = ax.get_legend_handles_labels()
+            ax.legend(handles + [Patch(facecolor="gray", alpha=0.65)],
+                      labels + ["Fan speed 12%"], loc="upper left",
+                      handlelength=1.5, borderaxespad=0.2)
         if stages is not None:
-            _draw_stages(ax, stages, xlims=time_range)
+            _draw_stages(ax, stages, xlims=time_range,
+                         label_y=0.05 if fan_strips else 0.02)
 
     # Keep the temperature visible in the upper-right corner.
     axes[0].text(
@@ -732,6 +752,51 @@ def _normalize_show(show):
     return set(names)
 
 
+def _prepare_run_groups(temperature_runs, combine_runs=None):
+    """Copy run inputs and validate explicit pooling of same-temperature runs."""
+    runs = [dict(run) for run in temperature_runs]
+    by_id = {}
+    for run in runs:
+        run_id = str(run.get("run_id", run["temperature"]))
+        if run_id in by_id:
+            raise ValueError("Each measurement needs a unique run_id: " + run_id)
+        run["run_id"] = run_id
+        run["fit_group"] = str(run["temperature"])
+        run["pooled"] = False
+        by_id[run_id] = run
+    if combine_runs is not None and not isinstance(combine_runs, dict):
+        raise TypeError("combine_runs must be None or a dict mapping labels to run ID lists")
+    assigned = set()
+    for label, members in (combine_runs or {}).items():
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("Combined fit labels must be nonempty strings")
+        if not isinstance(members, (list, tuple)) or len(members) < 2:
+            raise ValueError("Each combined fit needs at least two run IDs")
+        selected = []
+        for run_id in members:
+            if run_id not in by_id:
+                raise ValueError(f"Unknown run ID in combine_runs: {run_id}")
+            if run_id in assigned:
+                raise ValueError(f"Run appears more than once in combine_runs: {run_id}")
+            assigned.add(run_id)
+            selected.append(by_id[run_id])
+        temperatures = [_nominal_temperature_c(run) for run in selected]
+        if not all(np.isfinite(t) and np.isclose(t, temperatures[0]) for t in temperatures):
+            raise ValueError("Combined runs must have the same nominal temperature")
+        for run_number, run in enumerate(selected, start=1):
+            run["fit_group"] = label
+            run["pooled"] = True
+            run["combined_run_number"] = run_number
+    # Identical display labels must never accidentally pool separate measurements.
+    owners = {}
+    for run in runs:
+        label = run["fit_group"]
+        if label in owners and not (run["pooled"] and owners[label]["pooled"]):
+            raise ValueError("Fit labels must be unique unless explicitly combined: " + label)
+        owners[label] = run
+    return runs
+
+
 def temp_dep(
     temperature_runs: Sequence[dict],
     compounds: Sequence[str],
@@ -752,6 +817,9 @@ def temp_dep(
     pressure_pa=STANDARD_PRESSURE_PA,
     yscale: Optional[str] = None,
     k_temperature_savepath: Optional[str] = None,
+    fit_intercept: bool = True,
+    fan_speed_path: Optional[str] = None,
+    combine_runs: Optional[dict[str, Sequence[str]]] = None,
 ) -> tuple[
     list[tuple[plt.Figure, list[plt.Axes]]],
     pd.DataFrame,
@@ -769,10 +837,20 @@ def temp_dep(
     ``x = mean(precursor) * mean(reaction partner)``
     ``y = mean(product)``
 
-    Fit ``y = k*x`` separately for each temperature using zero-intercept ODR
+    Fit ``y = k*x + b`` (default) or ``y = k*x`` for each temperature using ODR
     with both x and y uncertainties. The kinetic legend displays each slope
     k and its standard error (1 SE). All datetimes must be timezone-naive UTC,
     e.g. ``datetime(2025, 9, 25, 10, 0)``; interval endpoints are inclusive.
+
+    combine_runs optionally pools interval points for a single kinetic fit, e.g.
+    ``{"-50 °C (combined)": ["m50_1", "m50_2"]}``. Each input run must have
+    a unique ``run_id`` (defaults to its temperature label). None keeps runs
+    separate. Only runs with the same nominal temperature may be pooled.
+    Trace plots stay separate; each interval keeps its x/y errors and local t_i.
+    Pooled kinetic labels use t^i_j: i is the 1-based run position in the
+    combine_runs list and j is its original interval number. The combined fit produces one k(T)
+    point; slopes are fitted from pooled points, not averaged. Returned means
+    retain run_id/run_label; temperature identifies the fit group.
 
     Parameters
     ----------
@@ -787,7 +865,10 @@ def temp_dep(
           for the k(T) x-coordinate, e.g. -50.0. Does not affect concentration
           conversion. Defaults to temperature_c, then a numeric Celsius label
           such as "-50 °C". Unresolvable labels are skipped with a message.
-        * ``trace_path`` (required, str or Path): calibrated compound trace
+        Multiple trace files are combined chronologically; duplicate timestamps
+        use the last listed file so overlapping data is not counted twice.
+
+        * ``trace_path`` (required, str, Path, or list of paths): calibrated compound trace
           CSV readable by ``read_trace_timeseries``; values are assumed pptv.
         * ``time_range`` (required, tuple of datetime): ``(start, stop)`` for
           loading and displaying that run; stop must be >= start.
@@ -814,7 +895,7 @@ def temp_dep(
         product must occur in this list after adduct expansion.
     horus_path : str or Path
         Required HORUS measurement filename, readable by ``load_data``.
-        Must contain ``HO2_ppt`` for the currently supported HO2 partner;
+        Must contain ``HO2_ppt`` for HO2 or ``RO2_crosstalk_ppt`` for RO2;
         those measurements are interpreted as pptv.
     precursor_compound : str
         Required precursor name, e.g. ``"C10H15O4.NH3H+"`` or ``"C10H15O4"``.
@@ -823,7 +904,7 @@ def temp_dep(
         Required product name, e.g. ``"C10H16O4.NH3H+"`` or ``"C10H16O4"``.
         Its interval mean forms y. Uses the same adduct rules as the precursor.
     reaction_partner : str, default "HO2"
-        Currently only ``"HO2"`` is implemented (case-insensitive; surrounding
+        Supports ``"HO2"`` and ``"RO2"`` (case-insensitive; surrounding
         whitespace is ignored). Other partners raise NotImplementedError.
     adduct : str, default ".NH3H+"
         Suffix appended to compound names without a dot. Examples:
@@ -887,7 +968,7 @@ def temp_dep(
         only when color_by_ap=True; otherwise ignored. AP is multiplied by
         1000 to display pptv, independently of ``concentration_unit``.
     concentration_unit : {"native", "molecules/cm3"}, default "native"
-        ``"native"`` keeps compound and HO2 concentrations in pptv.
+        ``"native"`` keeps compound and reaction-partner concentrations in pptv.
         ``"molecules/cm3"`` converts each measurement using temperature,
         pressure, the ideal gas law, and Avogadro's constant BEFORE averaging.
         Each run then needs measured or constant temperature (see above).
@@ -914,6 +995,21 @@ def temp_dep(
         Optional filename for the k(T) plot. Saved regardless of show selection;
         its parent directory must exist. None disables saving this figure.
 
+    fit_intercept : bool, default True
+        True fits both slope k and intercept b (y = k*x + b); False fixes b=0.
+        The legend reports fitted parameters ±1 SE. Results include intercept,
+        intercept_stderr and intercept_unit. Fixed b has zero uncertainty.
+        Free-intercept fits require three valid points with distinct x values;
+        otherwise points remain visible and the fit is skipped with a message.
+        The k(T) plot always uses the fitted slope and its standard error.
+
+    fan_speed_path : str or Path or None, default None
+        Optional fan-speed CSV containing Fan_BOT_Speed. Values below 50%
+        identify the 12% operating mode, as in run_plotting. Adds a thin gray
+        strip at the bottom of each trace axis and one legend entry. Stage
+        labels sit above the strip; averaging-interval shading is unchanged.
+        None disables the strip. This does not affect kinetic calculations.
+
     Returns
     -------
     trace_figures : list of (Figure, list of Axes)
@@ -925,8 +1021,8 @@ def temp_dep(
         included when color_by_ap=True. ``means.attrs["concentration_unit"]``
         records the chosen mode; original column names are preserved.
     regression_results : pandas.DataFrame
-        One row per fitted temperature: slope, slope_stderr (1 SE), fixed
-        zero intercept, slope_unit, centered/uncentered R-squared, p-value,
+        One row per fitted temperature: slope, slope_stderr (1 SE),
+        intercept, intercept_stderr, intercept_unit, fit_intercept, slope_unit, centered/uncentered R-squared, p-value,
         ODR diagnostics and n_points. Slope units are cm3/molecule or 1/pptv;
         no per-second factor is implied by this concentration relationship.
     kinetic_fig : matplotlib.figure.Figure
@@ -944,7 +1040,8 @@ def temp_dep(
     calibration uncertainty. The x-product uncertainty assumes independent
     precursor and partner errors. Points with missing/nonfinite values or
     nonpositive x/y SEMs are excluded. A fit needs at least two usable points
-    and an x-array that is not entirely zero.
+    and an x-array that is not entirely zero for a fixed-zero intercept.
+    A free intercept requires three usable points with distinct x values.
 
     Examples
     --------
@@ -993,6 +1090,12 @@ def temp_dep(
 
     plt.rcParams.update(cfg.PAPER_RC_PARAMS)
     trace_compounds = _prepare_trace_compounds(compounds, adduct)
+    # Expand filename placeholders using the formula without its ion adduct.
+    precursor_formula = precursor_compound.split(".", 1)[0]
+    if kinetic_savepath is not None:
+        kinetic_savepath = str(kinetic_savepath).replace("{precursor_compound}", precursor_formula)
+    if k_temperature_savepath is not None:
+        k_temperature_savepath = str(k_temperature_savepath).replace("{precursor_compound}", precursor_formula)
     normalized_adduct = (
         adduct if not adduct or adduct.startswith(".") else "." + adduct
     )
@@ -1015,9 +1118,10 @@ def temp_dep(
     if stages_path is not None and stages is not None:
         load_stages(stages_path)
 
+    temperature_runs = _prepare_run_groups(temperature_runs, combine_runs)
     plot_temperatures = {}
     for run in temperature_runs:
-        label = str(run["temperature"])
+        label = run["fit_group"]
         value = _nominal_temperature_c(run)
         if label in plot_temperatures and not np.isclose(plot_temperatures[label], value, equal_nan=True):
             raise ValueError(f"Conflicting plot temperatures for {label}")
@@ -1115,7 +1219,14 @@ def temp_dep(
             )
             means = means.merge(ap_means, on="range_index", how="left",
                                 validate="one_to_one")
-        means.insert(0, "temperature", temperature)
+        means.insert(0, "temperature", run["fit_group"])
+        means["run_id"] = run["run_id"]
+        means["run_label"] = temperature
+        means["interval_label"] = [
+            (rf"$t^{{{run['combined_run_number']}}}_{{{int(i)}}}$"
+             if run["pooled"] else _interval_label(i))
+            for i in means["range_index"]
+        ]
         all_means.append(means)
 
         if kinetic_x_column is None:
@@ -1123,6 +1234,8 @@ def temp_dep(
         elif kinetic_x_column != current_x_column:
             raise RuntimeError("Inconsistent kinetic x-column between runs.")
 
+        fan_speed_data = (load_data(fan_speed_path, time_range)
+                          if fan_speed_path is not None else None)
         with plt.ioff():
             trace_figures.append(
                 _plot_temperature_trace(
@@ -1139,6 +1252,7 @@ def temp_dep(
                     label_intervals=label_intervals,
                     concentration_unit=concentration_unit,
                     yscale=yscale,
+                    fan_speed_data=fan_speed_data,
                 )
             )
 
@@ -1147,7 +1261,7 @@ def temp_dep(
     combined_means.attrs["AP_pptv_unit"] = "pptv"
 
     partner_label = reaction_partner.strip().upper()
-    partner_plot_label = r"HO$_2$" if partner_label == "HO2" else partner_label
+    partner_plot_label = {"HO2": r"HO$_2$", "RO2": r"RO$_2$"}.get(partner_label, partner_label)
     x_label = (
         _chemical_label(precursor_name)
         + rf" $\times$ {partner_plot_label} "
@@ -1162,6 +1276,7 @@ def temp_dep(
             x_label=x_label,
             show="kinetics" in shown_plots,
             savepath=kinetic_savepath,
+            fit_intercept=fit_intercept,
             label_intervals=label_intervals,
             color_by_ap=color_by_ap,
             concentration_unit=concentration_unit,

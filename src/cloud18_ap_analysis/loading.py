@@ -100,8 +100,58 @@ def _timestamps_to_unix_ms(series: pd.Series, preferred_format: str | None = Non
     return time_ms
 
 
-def load_data(filepath: str | Path, time_range=None):
+def _report_trace_overlaps(paths, times_ms):
+    """Report intersecting file coverage within the loaded time window (UTC)."""
+    times = [np.unique(np.asarray(t)[np.isfinite(t)]) for t in times_ms]
+    overlaps = False
+    for i, current in enumerate(times):
+        if not current.size:
+            continue
+        for j in range(i):
+            previous = times[j]
+            if not previous.size:
+                continue
+            start, stop = max(current[0], previous[0]), min(current[-1], previous[-1])
+            if start <= stop:
+                overlaps = True
+                exact = np.intersect1d(previous, current).size
+                print(f"WARNING: trace file time coverage overlaps (loaded window):\n"
+                      f"  {paths[j]}\n  {paths[i]}\n"
+                      f"  {pd.to_datetime(start, unit='ms')} to {pd.to_datetime(stop, unit='ms')} UTC; "
+                      f"{exact} identical timestamps.\n"
+                      "  Later listed file wins at identical timestamps; other samples are retained.")
+    if overlaps:
+        all_times = np.concatenate(times)
+        duplicates = all_times.size - np.unique(all_times).size
+        print(f"Trace merge: {duplicates} duplicate cross-file timestamp entries removed "
+              "(counted once per timestamp, not per compound).")
+    elif len(paths) > 1:
+        print("Trace merge: no overlapping file time coverage in the loaded window.")
+
+
+def load_data(filepath: str | Path | list[str | Path], time_range=None):
     """Load one of the data formats used by the CLOUD18 analysis."""
+    if isinstance(filepath, (list, tuple)):
+        if not filepath:
+            raise ValueError("File list must not be empty")
+        datasets = [load_data(path, time_range) for path in filepath]
+        if not all(isinstance(data, Dataset) for data in datasets):
+            raise TypeError("Multiple files must contain channel datasets, not SMPS data")
+        names = set(datasets[0].channels)
+        if any(set(data.channels) != names for data in datasets[1:]):
+            raise ValueError("Trace files must contain the same channels")
+        _report_trace_overlaps(filepath, [
+            np.concatenate([ch.time for ch in data.channels.values()])
+            if data.channels else np.array([]) for data in datasets
+        ])
+        channels = {}
+        for name in datasets[0].channels:
+            frame = pd.DataFrame({
+                "time": np.concatenate([data[name].time for data in datasets]),
+                "value": np.concatenate([data[name].values for data in datasets]),
+            }).drop_duplicates("time", keep="last").sort_values("time")
+            channels[name] = Channel(name, frame["time"].to_numpy(), frame["value"].to_numpy())
+        return Dataset(channels)
     filepath = Path(filepath)
 
     with filepath.open("r", encoding="utf-8", errors="replace") as f:
@@ -633,9 +683,26 @@ def read_trace_timeseries(
     """
     Load selected compound time traces inside a requested time window.
 
+    path may be a single file or a nonempty list/tuple. Multiple files are
+    sorted by timestamp; at overlapping timestamps the last listed file wins.
+
     The trace file is read in chunks and filtered using the ``unixTime``
     column, so the complete trace file does not need to be loaded into memory.
     """
+    if isinstance(path, (list, tuple)):
+        if not path:
+            raise ValueError("File list must not be empty")
+        frames = [read_trace_timeseries(part, compounds, time_range, chunksize) for part in path]
+        normalized = []
+        for frame in frames:
+            frame = frame.rename(columns={c: {"time": "Time", "unixtime": "unixTime"}.get(c.lower(), c)
+                                          for c in frame.columns})
+            normalized.append(frame)
+        _report_trace_overlaps(path, [frame["unixTime"].to_numpy(dtype=float) * 1000
+                                     for frame in normalized])
+        return (pd.concat(normalized, ignore_index=True)
+                .drop_duplicates("unixTime", keep="last")
+                .sort_values("unixTime").reset_index(drop=True))
     if not compounds:
         raise ValueError("compounds must contain at least one compound")
 

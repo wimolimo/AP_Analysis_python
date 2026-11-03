@@ -127,7 +127,10 @@ Conversion uses `mixing_fraction * pressure_pa / (R * temperature_K) * 1e-6 * N_
 with Avogadro's constant `N_A = 6.02214076e23 molecules/mol`.
 Measured `TE_Calib_3` temperature is linearly interpolated onto each channel's
 UTC timestamps before smoothing or averaging. No extrapolation is performed:
-points outside condition coverage become NaN. Temperature and pressure are
+points outside condition coverage become NaN. Interpolation also leaves NaN
+strictly inside gaps longer than 30 minutes between valid condition measurements;
+measured endpoints are retained and gaps of exactly 30 minutes are allowed.
+This limit applies to measured temperature and pressure channels. Temperature and pressure are
 treated as known; their uncertainties are not propagated. The source files
 and loaded datasets are not changed.
 

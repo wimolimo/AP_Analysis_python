@@ -46,7 +46,7 @@ STAGE_SETTINGS = {
     "line_color": "0.6",
     "line_width": 1.0,
     "line_style": "--",
-    "font_size": 10,
+    "font_size": 15,
     "font_color": "0.4",
     "text_offset": 0.003,
     "max_length": 50,
@@ -60,7 +60,7 @@ TRACE_FIGSIZE = PAPER_UNSTACKED_SIZE
 KINETIC_FIGSIZE = (10.0, 7.0)
 IMPORTANT_RANGE_COLOR = "#8E7CC3"
 IMPORTANT_RANGE_ALPHA = 0.12
-KINETIC_MARKER_SIZE = 24
+KINETIC_MARKER_SIZE = 100
 KINETIC_MARKER_COLOR = "black"
 
 # =============================================================================
