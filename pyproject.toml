@@ -12,7 +12,11 @@ dependencies = [
     "pandas>=2.0",
     "matplotlib>=3.7",
     "scipy>=1.10",
+    "h5py>=3.10",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
