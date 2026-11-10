@@ -5,17 +5,38 @@ List order defines t_i; keep excluded intervals commented out.
 from datetime import datetime
 
 important_time_ranges_m50C = [
-    (datetime(2025, 9, 25, 10, 0, 0), datetime(2025, 9, 25, 20, 0, 0)),
-    (datetime(2025, 9, 26, 1, 30, 0), datetime(2025, 9, 26, 6, 0, 0)),
-    (datetime(2025, 9, 26, 12, 0, 0), datetime(2025, 9, 26, 16, 0, 0)),
-    (datetime(2025, 9, 26, 19, 0, 0), datetime(2025, 9, 27, 0, 0, 0)),
+    (datetime(2025, 9, 24, 18, 0, 0), datetime(2025, 9, 24, 20, 0, 0)),
+    (datetime(2025, 9, 24, 20, 30, 0), datetime(2025, 9, 24, 22, 30, 0)),
+    (datetime(2025, 9, 24, 23, 30, 0), datetime(2025, 9, 25, 0, 0, 0)),
+    (datetime(2025, 9, 25, 10, 0, 0), datetime(2025, 9, 25, 11, 0, 0)),
+    (datetime(2025, 9, 25, 11, 30, 0), datetime(2025, 9, 25, 12, 20, 0)),
+    (datetime(2025, 9, 25, 13, 0, 0), datetime(2025, 9, 25, 13, 45, 0)),
+    (datetime(2025, 9, 25, 14, 30, 0), datetime(2025, 9, 25, 15, 0, 0)),
+    (datetime(2025, 9, 25, 15, 30, 0), datetime(2025, 9, 25, 16, 25, 0)),
+    (datetime(2025, 9, 25, 17, 30, 0), datetime(2025, 9, 25, 18, 15, 0)),
+    (datetime(2025, 9, 25, 20, 0, 0), datetime(2025, 9, 25, 20, 50, 0)),
+    (datetime(2025, 9, 26, 2, 0, 0), datetime(2025, 9, 26, 3, 0, 0)),
+    (datetime(2025, 9, 26, 4, 30, 0), datetime(2025, 9, 26, 5, 15, 0)),
+    (datetime(2025, 9, 26, 6, 0, 0), datetime(2025, 9, 26, 6, 45, 0)),
+    (datetime(2025, 9, 26, 11, 0, 0), datetime(2025, 9, 26, 11, 45, 0)),
+    (datetime(2025, 9, 26, 13, 30, 0), datetime(2025, 9, 26, 14, 30, 0)),
+    (datetime(2025, 9, 26, 15, 30, 0), datetime(2025, 9, 26, 16, 30, 0)),
+    (datetime(2025, 9, 26, 19, 30, 0), datetime(2025, 9, 26, 20, 0, 0)),
+    (datetime(2025, 9, 26, 21, 0, 0), datetime(2025, 9, 26, 22, 15, 0)),
+    (datetime(2025, 9, 26, 22, 30, 0), datetime(2025, 9, 26, 23, 0, 0)),
+    (datetime(2025, 9, 26, 23, 30, 0), datetime(2025, 9, 27, 0, 30, 0)),
+    (datetime(2025, 9, 27, 2, 50, 0), datetime(2025, 9, 27, 3, 20, 0)),
     (datetime(2025, 9, 27, 4, 0, 0), datetime(2025, 9, 27, 4, 30, 0)),
+    (datetime(2025, 9, 27, 11, 0, 0), datetime(2025, 9, 27, 11, 30, 0)),
+    (datetime(2025, 9, 27, 11, 45, 0), datetime(2025, 9, 27, 12, 30, 0)),
+    (datetime(2025, 9, 27, 14, 45, 0), datetime(2025, 9, 27, 15, 30, 0)),
+    (datetime(2025, 9, 27, 17, 30, 0), datetime(2025, 9, 27, 18, 10, 0)),
+    (datetime(2025, 9, 27, 20, 0, 0), datetime(2025, 9, 27, 20, 15, 0)),
 ]
 
 important_time_ranges_m25C = [
     (datetime(2025, 9, 30, 2, 40, 0), datetime(2025, 9, 30, 3, 40, 0)),
     (datetime(2025, 9, 30, 8, 10, 0), datetime(2025, 9, 30, 9, 10, 0)),
-    # (datetime(2025, 9, 30, 11, 40, 0), datetime(2025, 9, 30, 12, 30, 0)),     # fan speed at 100%
     (datetime(2025, 9, 30, 14, 30, 0), datetime(2025, 9, 30, 15, 20, 0)),
     (datetime(2025, 9, 30, 16, 10, 0), datetime(2025, 9, 30, 17, 0, 0)),
     (datetime(2025, 9, 30, 18, 30, 0), datetime(2025, 9, 30, 21, 0, 0)),

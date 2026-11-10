@@ -6,7 +6,8 @@ are therefore kept as timezone-naive ``datetime`` values throughout.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 import re
 from typing import Optional, Sequence
 
@@ -24,12 +25,113 @@ from . import config as cfg
 from .loading import load_data, read_trace_timeseries
 from .models import Channel
 from .plotting import (_draw_stages, _draw_fan_speed_shading,
-                       _shade_intervals, _interval_label)
+                       _shade_intervals, _interval_label, _smooth_channel, _prepare_savepath,
+                       _maximize_window, _append_to_filename)
 from .stages import load_stages
 from .units import (convert_channel_concentration, concentration_label,
                     concentration_yscale, validate_concentration_unit, STANDARD_PRESSURE_PA)
 
 TimeRange = tuple[datetime, datetime]
+
+
+def _signal_name(selection, adduct):
+    if isinstance(selection, tuple):
+        if len(selection) != 2 or not all(isinstance(s, str) and s.strip() for s in selection):
+            raise ValueError("Use (instrument, exact channel name) for a signal")
+        return f"{selection[0]}:{selection[1]}"
+    if not isinstance(selection, str):
+        raise TypeError("A signal must be a name or an (instrument, channel) tuple")
+    return _prepare_trace_compounds([selection], adduct)[0]
+
+
+def _read_selected_signals(run, names, time_range, target_unit, temperature_c, pressure_pa):
+    """Read exact prepared channels, retaining each instrument's sample clock."""
+    from .prepared import prepared_channel_info
+    sources = run.get("sources", {})
+    catalogs, series, units, sample_times = {}, [], set(), {}
+    for name in names:
+        instrument, separator, channel = name.partition(":")
+        if not separator:
+            instrument, channel = "ptr", name
+        if instrument not in sources:
+            raise KeyError(f"{run.get('run_id', 'run')}: instrument {instrument!r} is unavailable; use prepared runs")
+        if instrument not in catalogs:
+            catalogs[instrument] = prepared_channel_info(sources[instrument])
+        if channel not in catalogs[instrument]:
+            raise KeyError(f"{instrument}: exact channel {channel!r} not found; use the name stored in H5")
+        unit = catalogs[instrument][channel]["unit"]
+        trace = load_data(sources[instrument], time_range, channels=[channel])[channel]
+        if not len(trace.time) or not np.any(np.isfinite(trace.values)):
+            raise ValueError(f"{run.get('run_id', 'run')}: {name} has no valid data in this run window")
+        if target_unit != "native" and unit != target_unit:
+            trace = convert_channel_concentration(trace, unit, target_unit,
+                        temperature_c=temperature_c, pressure_pa=pressure_pa)
+        units.add(unit if target_unit == "native" else target_unit)
+        series.append(pd.Series(trace.values, index=trace.time, name=name))
+        sample_times[name] = pd.to_datetime(trace.time, unit="ms")
+    if len(units) > 1:
+        raise ValueError("Mixed instrument units require concentration_unit='molecules/cm3'")
+    frame = pd.concat(series, axis=1).sort_index()
+    frame.insert(0, "Time", pd.to_datetime(frame.index, unit="ms"))
+    frame = frame.reset_index(drop=True)
+    frame.attrs["sample_times"] = sample_times
+    frame.attrs["native_unit"] = next(iter(units))
+    return frame
+
+
+def _available_temperature_runs(runs, trace_names, partner_name, color_by_ap):
+    """Filter prepared runs by selected measurements, without masking typos.
+
+    A channel must exist in at least one candidate run. Individual runs may
+    then be skipped for missing channels or finite samples in their window.
+    Legacy raw-file runs retain their existing validation in temp_dep.
+    """
+    from .prepared import prepared_channel_info
+    requests = []
+    for name in trace_names:
+        instrument, separator, channel = name.partition(":")
+        requests.append((instrument, channel) if separator else ("ptr", name))
+    horus_channels = {"HO2": "HO2_ppt", "RO2": "RO2_crosstalk_ppt"}
+    if partner_name.strip().upper() in horus_channels:
+        requests.append(("horus", horus_channels[partner_name.strip().upper()]))
+    if color_by_ap:
+        requests.append(("vocus", "AP"))
+    requests = list(dict.fromkeys(requests))
+    prepared = [run for run in runs if "sources" in run]
+    if not prepared:
+        return runs
+    catalogs = {}
+    for index, run in enumerate(prepared):
+        _validate_time_ranges([run["time_range"]])
+        for instrument, _ in requests:
+            if instrument in run["sources"] and (index, instrument) not in catalogs:
+                catalogs[index, instrument] = prepared_channel_info(run["sources"][instrument])
+    # Validate all names before skipping anything, so a typo is never silent.
+    for instrument, channel in requests:
+        if not any(channel in catalogs.get((i, instrument), {}) for i in range(len(prepared))):
+            raise KeyError(f"Exact channel {instrument}:{channel} not found in any candidate prepared run; check the instrument and channel name")
+    excluded = set()
+    for index, run in enumerate(prepared):
+        reasons = []
+        for instrument, channel in requests:
+            if channel not in catalogs.get((index, instrument), {}):
+                reasons.append(f"missing {instrument}:{channel}")
+                continue
+            trace = load_data(run["sources"][instrument], run["time_range"], channels=[channel])[channel]
+            if not np.any(np.isfinite(trace.values)):
+                reasons.append(f"no valid {instrument}:{channel} samples in this window")
+        if reasons:
+            excluded.add(run["run_id"])
+            print(f"Skipping {run['run_id']}: " + "; ".join(reasons))
+    available = [run for run in runs if run["run_id"] not in excluded]
+    if not available:
+        raise ValueError("No temperature runs have data for all selected signals")
+    for group in dict.fromkeys(run["fit_group"] for run in runs if run["pooled"]):
+        members = [run for run in runs if run["fit_group"] == group]
+        if any(run["run_id"] in excluded for run in members):
+            retained = [run["run_id"] for run in members if run["run_id"] not in excluded]
+            print(f"Combined fit {group}: available members " + (", ".join(retained) or "none"))
+    return available
 
 
 def _validate_time_ranges(ranges: Sequence[TimeRange]) -> list[TimeRange]:
@@ -208,12 +310,15 @@ def add_reaction_partner_interval_means(
         x-column.
     """
     partner = reaction_partner.strip().upper()
+    if reaction_partner in means.columns:
+        out = means.copy()
+        return _add_kinetic_product(out, precursor_compound, reaction_partner)
 
     partner_channels = {"HO2": "HO2_ppt", "RO2": "RO2_crosstalk_ppt"}
     if partner in partner_channels:
         partner_channel = partner_channels[partner]
         partner_label = partner
-        partner_data = load_data(horus_path, time_range)
+        partner_data = load_data(horus_path, time_range, channels=[partner_channel])
     else:
         raise NotImplementedError(
             f"Reaction partner {reaction_partner!r} is not implemented yet. "
@@ -243,6 +348,10 @@ def add_reaction_partner_interval_means(
         how="left",
         validate="one_to_one",
     )
+    return _add_kinetic_product(out, precursor_compound, partner_channel)
+
+
+def _add_kinetic_product(out, precursor_compound, partner_channel):
     kinetic_x_column = f"{precursor_compound} * {partner_channel}"
     out[kinetic_x_column] = out[precursor_compound] * out[partner_channel]
     kinetic_x_sem_column = f"{kinetic_x_column}_sem"
@@ -360,6 +469,7 @@ def plot_kinetic_relationship(
             print("Warning: no finite AP interval means for kinetic points; showing gray points.")
 
     for index, temperature in enumerate(temperatures):
+        candidates = grouped_means.loc[grouped_means["temperature"] == temperature]
         valid = grouped_means.loc[
             grouped_means["temperature"] == temperature,
             [x_column, y_compound, x_error_column, y_error_column]
@@ -376,6 +486,32 @@ def plot_kinetic_relationship(
         valid = valid.loc[
             (valid[x_error_column] > 0) & (valid[y_error_column] > 0)
         ]
+
+        finite_means = np.isfinite(candidates[[x_column, y_compound]]).all(axis=1)
+        usable_errors = (np.isfinite(candidates[[x_error_column, y_error_column]]).all(axis=1)
+                         & (candidates[x_error_column] > 0) & (candidates[y_error_column] > 0))
+        missing_means = int((~finite_means).sum())
+        missing_errors = int((finite_means & ~usable_errors).sum())
+        excluded = len(candidates) - len(valid)
+        reasons = []
+        if missing_means:
+            reasons.append(f"{missing_means} missing/nonfinite means")
+        if missing_errors:
+            reasons.append(f"{missing_errors} missing/nonpositive uncertainties")
+        missing_labels = excluded - missing_means - missing_errors
+        if missing_labels:
+            reasons.append(f"{missing_labels} missing interval labels")
+        print(f"Kinetics {temperature}: excluded {excluded} of {len(candidates)} interval points; "
+              f"{len(valid)} retained" + (" (" + "; ".join(reasons) + ")" if reasons else "") + ".")
+        if "run_id" in candidates and candidates["run_id"].nunique() > 1:
+            usable = finite_means & usable_errors
+            if label_intervals:
+                usable &= np.isfinite(candidates["range_index"])
+            for run_id, run_points in candidates.groupby("run_id", sort=False):
+                run_mask = candidates["run_id"] == run_id
+                retained = int(usable.loc[run_mask].sum())
+                print(f"  {run_id}: excluded {len(run_points) - retained} of "
+                      f"{len(run_points)} interval points; {retained} retained.")
 
         if valid.empty:
             print(f"Warning: no valid kinetic points for {temperature}.")
@@ -546,11 +682,12 @@ def plot_kinetic_relationship(
     if color_by_ap and missing_ap:
         handles.append(Line2D([], [], marker="o", linestyle="none", color="0.6"))
         labels.append("AP unavailable")
-    ax.legend(handles, labels, title="Temperature; fit ±1 SE")
+    ax.legend(handles, labels, title="Temperature; fit ±1σ")
     _style_axis(ax)
     fig.tight_layout()
 
     if savepath:
+        Path(savepath).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(savepath, dpi=cfg.PAPER_SAVE_DPI, bbox_inches="tight")
     if show:
         plt.show()
@@ -589,18 +726,29 @@ def _plot_temperature_trace(
     concentration_unit: str = "native",
     yscale: Optional[str] = None,
     fan_speed_data=None,
+    smoothing_time_traces: timedelta | None = None,
 ) -> tuple[plt.Figure, list[plt.Axes]]:
     """Create the time-trace figure for one temperature condition."""
     plot_time = pd.to_datetime(data[time_col], errors="coerce")
+    sample_times = data.attrs.get("sample_times", {})
+
+    def samples(compound):
+        mask = plot_time.isin(sample_times[compound]) if compound in sample_times else np.ones(len(data), dtype=bool)
+        times, values = plot_time[mask], data.loc[mask, compound]
+        if smoothing_time_traces is None:
+            return times, values
+        time_ms = times.to_numpy(dtype="datetime64[ms]").astype("int64").astype(float)
+        smoothed = _smooth_channel(Channel(compound, time_ms, values.to_numpy(dtype=float)),
+                                   smoothing_time_traces)
+        return times, smoothed.values
 
     if overlay:
-        fig, ax = plt.subplots(figsize=cfg.TRACE_FIGSIZE)
+        fig, ax = plt.subplots(figsize=cfg.TRACE_FIGSIZE, layout="constrained")
         axes = [ax]
         _shade_intervals(ax, important_time_ranges, label_intervals=label_intervals, xlims=time_range)
         for compound in trace_compounds:
             ax.plot(
-                plot_time,
-                data[compound],
+                *samples(compound),
                 label=_chemical_label(compound),
                 linewidth=cfg.PAPER_LINE_WIDTH,
             )
@@ -616,11 +764,12 @@ def _plot_temperature_trace(
             sharex=True,
             squeeze=False,
             figsize=(cfg.TRACE_FIGSIZE[0], max(1.8 * len(trace_compounds), 2.5)),
+            layout="constrained",
         )
         axes = list(axes_array[:, 0])
         for ax, compound in zip(axes, trace_compounds):
             _shade_intervals(ax, important_time_ranges, label_intervals=label_intervals, xlims=time_range)
-            ax.plot(plot_time, data[compound], linewidth=cfg.PAPER_LINE_WIDTH)
+            ax.plot(*samples(compound), linewidth=cfg.PAPER_LINE_WIDTH)
             ax.set_ylabel("Concentration [" + concentration_label(concentration_unit) + "]")
             ax.set_yscale(concentration_yscale(concentration_unit, yscale))
             ax.text(
@@ -661,8 +810,17 @@ def _plot_temperature_trace(
         fontsize=cfg.PAPER_LABEL_SIZE,
     )
 
-    fig.tight_layout()
+    if smoothing_time_traces is not None:
+        savepath, averaging_label = _prepare_savepath(savepath, smoothing_time_traces)
+        axes[0].set_title(f"Moving average: {averaging_label.removeprefix('avg')}")
+    if cfg.MAXIMIZE_TIME_TRACE_WINDOWS:
+        fig.set_size_inches(*cfg.MAXIMIZED_FIGURE_SIZE, forward=True)
+        if show:
+            _maximize_window(fig)
+    # Keep constrained layout active: GUI maximization can resize again after
+    # show(), so a one-shot tight_layout would leave stale outer margins.
     if savepath:
+        Path(savepath).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(savepath, dpi=cfg.PAPER_SAVE_DPI, bbox_inches="tight")
     if show:
         plt.show()
@@ -701,6 +859,7 @@ def plot_k_temperature(regression_results, concentration_unit="native", *,
     fig, ax = plt.subplots(figsize=cfg.KINETIC_FIGSIZE)
     order = list(temperature_order or regression_results.get("temperature", []))
     count = 0
+    connected_points = []
     for _, row in regression_results.iterrows():
         values = [row["temperature_c"], row["slope"], row["slope_stderr"]]
         if not np.all(np.isfinite(values)) or row["slope_stderr"] < 0:
@@ -712,6 +871,12 @@ def plot_k_temperature(regression_results, concentration_unit="native", *,
                     markersize=np.sqrt(cfg.KINETIC_MARKER_SIZE), capsize=3,
                     label=str(row["temperature"]))
         count += 1
+        connected_points.append((row["temperature_c"], row["slope"]))
+    if len(connected_points) > 1:
+        connected_points.sort(key=lambda point: point[0])
+        temperatures, slopes = zip(*connected_points)
+        ax.plot(temperatures, slopes, color="0.65", linewidth=1.0,
+                zorder=1, label="_nolegend_")
     if count:
         ax.legend(title="Temperature")
     else:
@@ -722,11 +887,12 @@ def plot_k_temperature(regression_results, concentration_unit="native", *,
     unit = r"cm$^3$ molecule$^{-1}$" if concentration_unit == "molecules/cm3" else r"pptv$^{-1}$"
     ax.set_ylabel(f"Concentration slope k [{unit}]")
     ax.set_title(title or "Concentration slope versus temperature")
-    ax.text(0.02, 0.98, "Error bars: ±1 SE", transform=ax.transAxes,
+    ax.text(0.02, 0.98, "Error bars: ±1σ", transform=ax.transAxes,
             ha="left", va="top", fontsize=cfg.PAPER_LABEL_SIZE)
     _style_axis(ax)
     fig.tight_layout()
     if savepath:
+        Path(savepath).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(savepath, dpi=cfg.PAPER_SAVE_DPI, bbox_inches="tight")
     if show:
         plt.show()
@@ -799,11 +965,11 @@ def _prepare_run_groups(temperature_runs, combine_runs=None):
 
 def temp_dep(
     temperature_runs: Sequence[dict],
-    compounds: Sequence[str],
+    compounds: Sequence[str | tuple[str, str]],
     horus_path: str,
-    precursor_compound: str,
-    product_compound: str,
-    reaction_partner: str = "HO2",
+    precursor_compound: str | tuple[str, str],
+    product_compound: str | tuple[str, str],
+    reaction_partner: str | tuple[str, str] = "HO2",
     adduct: str = ".NH3H+",
     show: bool | str | Sequence[str] = True,
     overlay: bool = True,
@@ -820,6 +986,9 @@ def temp_dep(
     fit_intercept: bool = True,
     fan_speed_path: Optional[str] = None,
     combine_runs: Optional[dict[str, Sequence[str]]] = None,
+    high_res: bool | None = None,
+    smoothing_time_traces: timedelta | None = None,
+    trace_savepath: Optional[str] = None,
 ) -> tuple[
     list[tuple[plt.Figure, list[plt.Axes]]],
     pd.DataFrame,
@@ -852,6 +1021,19 @@ def temp_dep(
     point; slopes are fitted from pooled points, not averaged. Returned means
     retain run_id/run_label; temperature identifies the fit group.
 
+    Prepared runs are checked for finite samples of all selected trace and
+    kinetic channels (plus HORUS partners and AP coloring when requested).
+    Runs lacking coverage are skipped with a reason; names absent from every
+    candidate prepared run raise an error. Combined fits retain available
+    members, preserving their original interval labels. No available run is
+    an error. Known campaign runs loaded by make_temperature_runs use the
+    current intervals.py rather than the preparation-time H5 snapshot.
+    high_res=True/False selects the prepared high/low-resolution PTR source
+    for all runs, including tuple selections and interval uncertainties.
+    None keeps the sources supplied by make_temperature_runs. Raw CSV callers
+    choose resolution in make_temperature_runs(..., high_res=...). Missing
+    prepared resolutions raise an error rather than substituting another one.
+
     Parameters
     ----------
     temperature_runs : sequence of dict
@@ -876,8 +1058,6 @@ def temp_dep(
           ``[(start1, stop1), (start2, stop2), ...]`` for averaging. Choose
           intervals inside ``time_range``. Their input order defines t_1,
           t_2, etc.; numbering restarts for each temperature.
-        * ``trace_savepath`` (optional, str or Path): figure filename, e.g.
-          ``"output/traces_m50.png"``; omit or use None to avoid saving.
         * ``temperature_path`` (optional, str or Path): measurement file
           readable by ``load_data`` with a temperature channel in Celsius.
           Used only for ``concentration_unit="molecules/cm3"``.
@@ -888,24 +1068,36 @@ def temp_dep(
           In molecules/cm3 mode, supply either ``temperature_path`` or
           ``temperature_c``. If both are supplied, the file takes precedence.
 
+    smoothing_time_traces : timedelta or None, default None
+        Centered moving-average window for displayed traces only, applied
+        after unit conversion, independently on each instrument's sample times.
+        Interval means, SEMs and kinetic fits always use unsmoothed data.
+        Trace filenames receive an averaging suffix such as _avg10min.
+
     compounds : sequence of str
         Required, nonempty names of trace compounds to load and plot, e.g.
         ``["C10H15O4.NH3H+", "C10H16O4.NH3H+"]``. Bare formulas such as
         ``"C10H15O4"`` receive the ``adduct`` suffix. Both the precursor and
-        product must occur in this list after adduct expansion.
+        product must occur in this list after adduct expansion when using strings.
+        Tuples ``(instrument, exact H5 channel)`` are also accepted and do not
+        receive an adduct suffix. Tuple kinetic selections are added automatically.
     horus_path : str or Path
         Required HORUS measurement filename, readable by ``load_data``.
         Must contain ``HO2_ppt`` for HO2 or ``RO2_crosstalk_ppt`` for RO2;
         those measurements are interpreted as pptv.
-    precursor_compound : str
+    precursor_compound : str or (instrument, channel) tuple
         Required precursor name, e.g. ``"C10H15O4.NH3H+"`` or ``"C10H15O4"``.
         Its interval mean is multiplied by the partner mean to form x.
-    product_compound : str
+    product_compound : str or (instrument, channel) tuple
         Required product name, e.g. ``"C10H16O4.NH3H+"`` or ``"C10H16O4"``.
         Its interval mean forms y. Uses the same adduct rules as the precursor.
-    reaction_partner : str, default "HO2"
+    reaction_partner : str or (instrument, channel) tuple, default "HO2"
         Supports ``"HO2"`` and ``"RO2"`` (case-insensitive; surrounding
-        whitespace is ignored). Other partners raise NotImplementedError.
+        whitespace is ignored), or an exact channel selected with a tuple.
+        Tuple selections require prepared ``sources`` in each run, supplied by
+        ``make_temperature_runs(..., prepared=True)``. Mixed pptv and molecules/cm3
+        sources require ``concentration_unit="molecules/cm3"``; calibrated LToF
+        values are kept unchanged. Missing channels or empty coverage raise errors.
     adduct : str, default ".NH3H+"
         Suffix appended to compound names without a dot. Examples:
         ``".NH3H+"``, ``"NH3H+"``, ``".H+"``, or ``""`` for no suffix.
@@ -932,10 +1124,17 @@ def temp_dep(
         True overlays all compounds on one axis per temperature. False gives
         each compound a separate subplot sharing the time axis. Does not
         change the combined kinetic plot or averaging calculations.
+    trace_savepath : str or Path or None, default None
+        Template for trace figures; None means do not save them. Supports
+        {run_id}, {precursor_compound}, {reaction_partner}, and {product_compound}. Compounds use
+        formulas without ion suffixes. If multiple runs share a template without
+        {run_id}, the run ID is appended to prevent overwriting. Smoothing adds
+        its suffix afterward. Run dictionaries no longer set trace filenames.
     kinetic_savepath : str or Path or None, default None
         Filename for the combined kinetic figure; None means do not save it.
-        The extension selects the format, e.g. .png or .pdf. Create parent
-        directories first, for this path and any ``trace_savepath`` values.
+        The extension selects the format, e.g. .png or .pdf. All three save paths
+        support precursor/partner/product placeholders in directories and filenames.
+        Missing parent directories are created automatically when saving.
     stages_path : str or Path or None, default None
         CLOUD stages.txt file to load once for all trace figures. None reuses
         stages already loaded with ``load_stages``. Ignored when stages=None.
@@ -1080,6 +1279,11 @@ def temp_dep(
         )
     """
     shown_plots = _normalize_show(show)
+    if smoothing_time_traces is not None:
+        if not isinstance(smoothing_time_traces, timedelta):
+            raise TypeError("smoothing_time_traces must be a timedelta or None")
+        if smoothing_time_traces.total_seconds() <= 0:
+            raise ValueError("smoothing_time_traces must be positive")
     validate_concentration_unit(concentration_unit)
     if color_by_ap and ap_path is None:
         raise ValueError("ap_path is required when color_by_ap=True.")
@@ -1089,36 +1293,57 @@ def temp_dep(
         raise ValueError("compounds must contain at least one compound.")
 
     plt.rcParams.update(cfg.PAPER_RC_PARAMS)
-    trace_compounds = _prepare_trace_compounds(compounds, adduct)
+    trace_compounds = list(dict.fromkeys(_signal_name(c, adduct) for c in compounds))
+    explicit_signals = any(isinstance(c, tuple) for c in [*compounds, precursor_compound, product_compound, reaction_partner])
     # Expand filename placeholders using the formula without its ion adduct.
-    precursor_formula = precursor_compound.split(".", 1)[0]
+    precursor_formula = (precursor_compound[1] if isinstance(precursor_compound, tuple)
+                         else precursor_compound).split(".", 1)[0]
+    partner_formula = (reaction_partner[1] if isinstance(reaction_partner, tuple)
+                       else reaction_partner.strip()).split(".", 1)[0]
+    product_formula = (product_compound[1] if isinstance(product_compound, tuple)
+                       else product_compound.strip()).split(".", 1)[0]
     if kinetic_savepath is not None:
-        kinetic_savepath = str(kinetic_savepath).replace("{precursor_compound}", precursor_formula)
+        kinetic_savepath = (str(kinetic_savepath)
+                           .replace("{precursor_compound}", precursor_formula)
+                           .replace("{reaction_partner}", partner_formula)
+                           .replace("{product_compound}", product_formula))
     if k_temperature_savepath is not None:
-        k_temperature_savepath = str(k_temperature_savepath).replace("{precursor_compound}", precursor_formula)
-    normalized_adduct = (
-        adduct if not adduct or adduct.startswith(".") else "." + adduct
-    )
-    precursor_name = (
-        precursor_compound
-        if "." in precursor_compound
-        else f"{precursor_compound}{normalized_adduct}"
-    )
-    product_name = (
-        product_compound
-        if "." in product_compound
-        else f"{product_compound}{normalized_adduct}"
-    )
-
-    if precursor_name not in trace_compounds:
-        raise ValueError(f"Precursor {precursor_name!r} is not in compounds.")
-    if product_name not in trace_compounds:
-        raise ValueError(f"Product {product_name!r} is not in compounds.")
+        k_temperature_savepath = (str(k_temperature_savepath)
+                                 .replace("{precursor_compound}", precursor_formula)
+                                 .replace("{reaction_partner}", partner_formula)
+                                 .replace("{product_compound}", product_formula))
+    precursor_name = _signal_name(precursor_compound, adduct)
+    product_name = _signal_name(product_compound, adduct)
+    partner_name = (_signal_name(reaction_partner, adduct)
+                    if isinstance(reaction_partner, tuple) else reaction_partner)
+    for selection, name in ((precursor_compound, precursor_name), (product_compound, product_name)):
+        if name not in trace_compounds:
+            if isinstance(selection, tuple):
+                trace_compounds.append(name)
+            else:
+                raise ValueError(f"Compound {name!r} is not in compounds.")
+    if isinstance(reaction_partner, tuple) and partner_name not in trace_compounds:
+        trace_compounds.append(partner_name)
 
     if stages_path is not None and stages is not None:
         load_stages(stages_path)
 
+    if high_res is not None:
+        from .prepared import select_prepared_resolution
+        selected_runs = []
+        for original in temperature_runs:
+            run = dict(original)
+            if "sources" in run:
+                run["sources"] = dict(run["sources"])
+                run["sources"]["ptr"] = select_prepared_resolution(run["sources"]["ptr"], high_res)
+                run["trace_path"] = run["sources"]["ptr"]
+            else:
+                run["trace_path"] = select_prepared_resolution(run["trace_path"], high_res)
+            selected_runs.append(run)
+        temperature_runs = selected_runs
     temperature_runs = _prepare_run_groups(temperature_runs, combine_runs)
+    temperature_runs = _available_temperature_runs(
+        temperature_runs, trace_compounds, partner_name, color_by_ap)
     plot_temperatures = {}
     for run in temperature_runs:
         label = run["fit_group"]
@@ -1145,6 +1370,8 @@ def temp_dep(
             )
 
         temperature = str(run["temperature"])
+        if "stages_path" in run:
+            load_stages(run["stages_path"])
         time_range = _validate_time_ranges([run["time_range"]])[0]
         intervals = _validate_time_ranges(run["important_time_ranges"])
         if not intervals:
@@ -1152,11 +1379,20 @@ def temp_dep(
                 f"important_time_ranges must not be empty for {temperature}."
             )
 
-        data = read_trace_timeseries(
-            run["trace_path"],
-            trace_compounds,
-            time_range,
-        )
+        temperature_c = None
+        if concentration_unit == "molecules/cm3":
+            if "temperature_path" in run:
+                temperature_name = run.get("temperature_channel", "TE_Calib_3")
+                temperature_c = load_data(run["temperature_path"], channels=[temperature_name])[temperature_name]
+            else:
+                temperature_c = run.get("temperature_c")
+        if explicit_signals:
+            data = _read_selected_signals(run, trace_compounds, time_range,
+                                          concentration_unit, temperature_c, pressure_pa)
+            if concentration_unit == "native" and data.attrs["native_unit"] != "pptv":
+                raise ValueError("Instrument selections in native mode must use pptv; use concentration_unit='molecules/cm3' for LToF")
+        else:
+            data = read_trace_timeseries(run["trace_path"], trace_compounds, time_range)
         if data.empty:
             raise RuntimeError(
                 f"No AP trace data found for {temperature} inside "
@@ -1172,15 +1408,8 @@ def temp_dep(
                 f"Loaded AP trace data for {temperature} contains no Time column."
             )
 
-        temperature_c = None
-        if concentration_unit == "molecules/cm3":
-            if "temperature_path" in run:
-                temperature_c = load_data(run["temperature_path"])[
-                    run.get("temperature_channel", "TE_Calib_3")
-                ]
-            elif "temperature_c" in run:
-                temperature_c = run["temperature_c"]
-            else:
+        if concentration_unit == "molecules/cm3" and not explicit_signals:
+            if temperature_c is None:
                 raise ValueError("Each run needs temperature_path or temperature_c for molecules/cm3")
             data = data.copy()
             timestamps = pd.to_datetime(data[time_col], errors="coerce")
@@ -1200,17 +1429,18 @@ def temp_dep(
         )
         means, current_x_column = add_reaction_partner_interval_means(
             means=means,
-            horus_path=horus_path,
+            horus_path=run.get("horus_path", horus_path),
             time_range=time_range,
             important_time_ranges=intervals,
             precursor_compound=precursor_name,
-            reaction_partner=reaction_partner,
+            reaction_partner=partner_name,
             concentration_unit=concentration_unit,
             temperature_c=temperature_c,
             pressure_pa=pressure_pa,
         )
         if color_by_ap:
-            ap_data = load_data(ap_path, time_range)
+            ap_source = run.get("ap_path", ap_path)
+            ap_data = load_data(ap_source, time_range, channels=["AP"])
             if "AP" not in ap_data.channels:
                 raise KeyError("AP channel not found in " + str(ap_path))
             ap_means = calculate_channel_interval_means(
@@ -1234,8 +1464,18 @@ def temp_dep(
         elif kinetic_x_column != current_x_column:
             raise RuntimeError("Inconsistent kinetic x-column between runs.")
 
-        fan_speed_data = (load_data(fan_speed_path, time_range)
-                          if fan_speed_path is not None else None)
+        fan_source = run.get("fan_speed_path", fan_speed_path) if fan_speed_path is not None else None
+        fan_speed_data = (load_data(fan_source, time_range, channels=["Fan_BOT_Speed"])
+                          if fan_source is not None else None)
+        current_trace_savepath = None
+        if trace_savepath is not None:
+            current_trace_savepath = (str(trace_savepath)
+                                     .replace("{run_id}", str(run["run_id"]))
+                                     .replace("{precursor_compound}", precursor_formula)
+                                     .replace("{reaction_partner}", partner_formula)
+                                     .replace("{product_compound}", product_formula))
+            if "{run_id}" not in str(trace_savepath) and len(temperature_runs) > 1:
+                current_trace_savepath = _append_to_filename(current_trace_savepath, run["run_id"])
         with plt.ioff():
             trace_figures.append(
                 _plot_temperature_trace(
@@ -1247,12 +1487,13 @@ def temp_dep(
                     temperature=temperature,
                     overlay=overlay,
                     show="traces" in shown_plots,
-                    savepath=run.get("trace_savepath"),
+                    savepath=current_trace_savepath,
                     stages=stages,
                     label_intervals=label_intervals,
                     concentration_unit=concentration_unit,
                     yscale=yscale,
                     fan_speed_data=fan_speed_data,
+                    smoothing_time_traces=smoothing_time_traces,
                 )
             )
 
@@ -1260,8 +1501,8 @@ def temp_dep(
     combined_means.attrs["concentration_unit"] = concentration_unit
     combined_means.attrs["AP_pptv_unit"] = "pptv"
 
-    partner_label = reaction_partner.strip().upper()
-    partner_plot_label = {"HO2": r"HO$_2$", "RO2": r"RO$_2$"}.get(partner_label, partner_label)
+    partner_label = partner_name.strip().upper()
+    partner_plot_label = {"HO2": r"HO$_2$", "RO2": r"RO$_2$"}.get(partner_label, _chemical_label(partner_name))
     x_label = (
         _chemical_label(precursor_name)
         + rf" $\times$ {partner_plot_label} "

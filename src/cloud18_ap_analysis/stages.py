@@ -7,7 +7,12 @@ _STAGE_DATA = []
 
 
 def parse_cloud_log(filepath):
-    """Parse CLOUD log stage blocks into dictionaries with UTC timestamps."""
+    """Parse stages, keeping event text and untimed notes in source order.
+
+    Only event timestamps position markers. Untimed text is explicitly labeled
+    and never inherits a preceding or following event's time. Metadata fields
+    are read on their own lines; decorative headers and staff lists are skipped.
+    """
     content = Path(filepath).read_text(encoding="utf-8", errors="replace")
     stage_numbers = re.findall(r"\*{12,}(\d+\.\d+)\*{12,}", content)
     blocks = re.split(r"\*{12,}\d+\.\d+\*{12,}", content)
@@ -15,23 +20,44 @@ def parse_cloud_log(filepath):
     results = []
     for idx, number in enumerate(stage_numbers):
         block = blocks[idx + 1] if idx + 1 < len(blocks) else ""
-        type_m = re.search(r"Type:\s*(.+)", block)
-        desc_m = re.search(r"Description:\s*(.*)", block)
-        comm_m = re.search(r"Comments:\s*(.*)", block)
-        details = [m.group(0).strip() for m in re.finditer(
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} .+", block
-        )]
-        time_m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", block)
-        stage_time = (
-            datetime.strptime(time_m.group(1), "%Y-%m-%d %H:%M:%S")
-            if time_m else None
-        )
+        fields = {"Type": "", "Description": "", "Comments": ""}
+        details = []
+        stage_time = None
+        in_events = False
+        for raw_line in block.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            field = re.fullmatch(r"(Type|Description|Comments):[ \t]*(.*)", line)
+            if field and not in_events:
+                fields[field[1]] = field[2]
+                continue
+            # Decorative headings and staff information are not event notes.
+            if "CLOUD Run.Stage=" in line:
+                continue
+            if set(line) == {"*"}:
+                in_events = True
+                continue
+            if line.startswith(("Shift team leader:", "Team member:")):
+                continue
+            timestamp = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(.*)", line)
+            if timestamp:
+                event_time = datetime.strptime(timestamp[1], "%Y-%m-%d %H:%M:%S")
+                if stage_time is None:
+                    stage_time = event_time
+                in_events = True
+                text = timestamp[2].strip()
+                details.append(timestamp[1] + (" " + text if text else ""))
+            elif in_events:
+                # Preserve source order without borrowing a neighboring time.
+                # A standalone timestamp followed by text remains two entries.
+                details.append("[untimed note] " + line)
         results.append({
             "stage": number,
             "time": stage_time,
-            "type": type_m.group(1).strip() if type_m else "",
-            "description": desc_m.group(1).strip() if desc_m else "",
-            "comments": comm_m.group(1).strip() if comm_m else "",
+            "type": fields["Type"],
+            "description": fields["Description"],
+            "comments": fields["Comments"],
             "details": details,
         })
     return results
@@ -40,7 +66,9 @@ def parse_cloud_log(filepath):
 def load_stages(filepath):
     """Parse a CLOUD log and store its stages for subsequent plotting."""
     global _STAGE_DATA
-    _STAGE_DATA = parse_cloud_log(filepath)
+    from .prepared import PreparedSource, read_prepared_stages
+    _STAGE_DATA = (read_prepared_stages(filepath) if isinstance(filepath, PreparedSource)
+                   else parse_cloud_log(filepath))
     print(f"Loaded {len(_STAGE_DATA)} stages")
     return _STAGE_DATA
 

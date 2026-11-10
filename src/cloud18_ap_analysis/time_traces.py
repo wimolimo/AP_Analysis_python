@@ -7,14 +7,22 @@ from pathlib import Path
 
 from .loading import load_data
 from .stages import load_stages
-from .plotting import plot_data
+from .plotting import plot_data, _plot_window_kind
+from .models import Channel, Dataset
+from .trace_selection import available_channels, resolve_channel
+from .prepared import PreparedSource, prepared_channel_info
 from .units import (convert_dataset_concentrations, concentration_label,
                     concentration_yscale, validate_concentration_unit, STANDARD_PRESSURE_PA)
 
 
+def _plot_trace_data(*args, **kwargs):
+    with _plot_window_kind("time_traces"):
+        return plot_data(*args, **kwargs)
+
+
 def plot_time_traces(
-    trace_path: str | Path | list[str | Path],
-    compounds: list[str],
+    trace_path: str | Path | list[str | Path] | dict,
+    compounds: list[str] | dict[str, list[str]],
     time_range: tuple[datetime, datetime],
     stages_path: str | Path | None = None,
     savepath: str | Path | None = None,
@@ -34,6 +42,9 @@ def plot_time_traces(
     temperature_channel: str = "TE_Calib_3",
     temperature_c=None,
     pressure_pa=STANDARD_PRESSURE_PA,
+    adduct_preferences=None,
+    source_units=None,
+    high_res: bool | None = None,
 ):
     """
     Plot time traces of selected compounds.
@@ -46,7 +57,23 @@ def plot_time_traces(
         duplicate timestamps use the last listed file (no double counting).
 
     compounds
-        Compound/channel names that should be shown.
+        Channel names, or {instrument: [neutral formula or full channel name]}.
+        For grouped selection, trace_path is a mapping of instrument to source.
+        Two different units share a panel with separate y axes (cps on the right).
+        stacked=True gives one panel per signal.
+
+    adduct_preferences
+        Optional {instrument: [adducts in priority order]} for grouped selection.
+        Ambiguous matches without a preferred ion raise an actionable error.
+
+    source_units
+        Optional {instrument: unit} for raw grouped sources. Prepared channels
+        use their stored units. Counts cannot be converted to concentration.
+
+    high_res
+        True/False selects prepared high/low-resolution PTR measurements.
+        None keeps the supplied source. Other instruments are unchanged.
+        Raw CSV callers select paths through runs.py instead.
 
     time_range
         Tuple ``(start, stop)`` defining the displayed time range.
@@ -117,9 +144,27 @@ def plot_time_traces(
     """
 
     validate_concentration_unit(concentration_unit)
+    if high_res is not None:
+        from .prepared import select_prepared_resolution
+        if isinstance(trace_path, dict):
+            trace_path = dict(trace_path)
+            if "ptr" in trace_path:
+                trace_path["ptr"] = select_prepared_resolution(trace_path["ptr"], high_res)
+        else:
+            trace_path = select_prepared_resolution(trace_path, high_res)
+
+    if isinstance(compounds, dict):
+        return _plot_instruments(
+            trace_path, compounds, time_range, adduct_preferences or {}, source_units or {},
+            concentration_unit, temperature_path, temperature_channel, temperature_c, pressure_pa,
+            stacked, ylabel, stages_path, fan_speed_path,
+            dict(xlims=time_range, ylims=ylims, yscale=concentration_yscale(concentration_unit, yscale),
+                 smoothing=smoothing, stages=stages, important_time_ranges=important_time_ranges,
+                 label_intervals=label_intervals, savepath=savepath, interactive=interactive),
+        )
 
     # Load only the requested time period
-    data = load_data(trace_path, time_range)
+    data = load_data(trace_path, time_range, channels=compounds)
 
     # Load CLOUD stages so plotting.py can draw them
     if stages_path is not None:
@@ -144,7 +189,7 @@ def plot_time_traces(
 
     if concentration_unit == "molecules/cm3":
         if temperature_path is not None:
-            temperature_c = load_data(temperature_path)[temperature_channel]
+            temperature_c = load_data(temperature_path, channels=[temperature_channel])[temperature_channel]
         data = convert_dataset_concentrations(
             data, {name: source_unit for name in compounds}, concentration_unit,
             temperature_c=temperature_c, pressure_pa=pressure_pa,
@@ -155,11 +200,11 @@ def plot_time_traces(
     yscale = concentration_yscale(concentration_unit, yscale)
 
     fan_speed_data = (
-        load_data(fan_speed_path, time_range)
+        load_data(fan_speed_path, time_range, channels=["Fan_BOT_Speed"])
         if fan_speed_path is not None else None
     )
 
-    plot_data(
+    _plot_trace_data(
         data,
         channels=compounds,
         stacked=stacked,
@@ -175,3 +220,82 @@ def plot_time_traces(
         savepath=savepath,
         interactive=interactive,
     )
+
+
+def _plot_instruments(sources, requests, time_range, preferences, source_units,
+                      target_unit, temperature_path, temperature_channel, temperature_c,
+                      pressure_pa, stacked, ylabel, stages_path, fan_speed_path, options):
+    if not isinstance(sources, dict):
+        raise TypeError("Grouped compounds require trace_path=run['sources']")
+    selected = []
+    for instrument, compounds in requests.items():
+        if not compounds:
+            continue
+        if isinstance(compounds, str):
+            raise TypeError(f"{instrument}: use a list of compound names")
+        if instrument not in sources:
+            raise KeyError(f"Instrument {instrument!r} is not available in this prepared run. "
+                           "Check the run ID and rebuild with prepare_runs.py if needed.")
+        source = sources[instrument]
+        available = available_channels(source)
+        names = []
+        for request in compounds:
+            try:
+                name = resolve_channel(request, available, preferences.get(instrument, ()))
+            except (KeyError, ValueError) as exc:
+                raise type(exc)(f"{instrument}: {exc}") from exc
+            if name not in names:
+                names.append(name)
+        info = prepared_channel_info(source) if isinstance(source, PreparedSource) else {}
+        units = {name: info[name]["unit"] if info else source_units.get(instrument, "unknown")
+                 for name in names}
+        units = {name: {"ppt": "pptv", "ppb": "ppbv"}.get(unit, unit)
+                 for name, unit in units.items()}
+        if target_unit != "native" and any(unit not in {"pptv", "ppbv", target_unit} for unit in units.values()):
+            raise ValueError(f"{instrument}: cannot convert {set(units.values())} to {target_unit}; "
+                             "use concentration_unit='native' until the signals are calibrated.")
+        selected.append((instrument, source, names, units))
+    if not selected:
+        raise ValueError("Select at least one compound")
+    if target_unit != "native" and temperature_path is not None:
+        temperature_c = load_data(temperature_path, channels=[temperature_channel])[temperature_channel]
+    groups = {}
+    for instrument, source, names, units in selected:
+        data = load_data(source, time_range, channels=names)
+        if target_unit != "native":
+            data = convert_dataset_concentrations(data,
+                                                 {name: unit for name, unit in units.items()
+                                                  if unit != target_unit}, target_unit,
+                                                 temperature_c=temperature_c, pressure_pa=pressure_pa)
+        for name in names:
+            label = f"{instrument.upper()} · {name}"
+            print(f"Selected {label}")
+            unit = units[name] if target_unit == "native" else target_unit
+            group = (unit, label) if stacked else (unit,)
+            ch = data[name]
+            groups.setdefault(group, {})[label] = Channel(label, ch.time.copy(), ch.values.copy())
+    if stages_path is not None:
+        load_stages(stages_path)
+    options["fan_speed_data"] = (load_data(fan_speed_path, time_range, channels=["Fan_BOT_Speed"])
+                                  if fan_speed_path is not None else None)
+    if not stacked and len(groups) == 2:
+        # Keep concentration left and count rate right regardless of input order.
+        keys = sorted(groups, key=lambda key: key[0] == "cps")
+        left, right = [list(groups[key]) for key in keys]
+        combined = Dataset({name: channel for key in keys
+                            for name, channel in groups[key].items()})
+        axis_labels = [ylabel or ("Signal" if key[0] in {"cps", "unknown"} else "Concentration")
+                       + " [" + concentration_label(target_unit, key[0]) + "]" for key in keys]
+        # The existing multi-dataset plotter supports a dual-axis channel tuple.
+        return _plot_trace_data([combined], channels=[(left, right)],
+                         ylabels=[tuple(axis_labels)], **options)
+    panels = [Dataset(channels) for channels in groups.values()]
+    labels = [ylabel or ("Signal" if key[0] in {"cps", "unknown"} else "Concentration")
+              + " [" + concentration_label(target_unit, key[0]) + "]" for key in groups]
+    if len(panels) == 1:
+        return _plot_trace_data(panels[0], channels=list(panels[0].channels), ylabels=labels[0], **options)
+    # plot_data's list interface keeps independent time axes and all stage/fan annotations.
+    if options["ylims"] is not None:
+        options["ylims"] = [options["ylims"]] * len(panels)
+    return _plot_trace_data(panels, channels=[list(panel.channels) for panel in panels],
+                     ylabels=labels, **options)

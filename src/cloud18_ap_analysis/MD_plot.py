@@ -22,7 +22,7 @@ from .loading import (
     read_trace_header, read_composition_table, read_trace_table,
     aggregate_window_unix_dt, aggregate_window_streaming,
     _detect_and_skip_header_rows, _detect_delimiter,
-    classical_mass_defect, element_counts,
+    nominal_mass, exact_mass, element_counts,
     select_preferred_adducts,
 )
 
@@ -52,9 +52,10 @@ def md_plot(
     stream: bool = True,                    # streaming read for huge CSVs
     chunksize: int = 200_000,
     assume_sorted_unix: bool = True,
+    high_res: bool | None = None,
 ) -> MDPlotResult:
     """
-    Build a classical mass defect (MD = m - round(m)) plot using datetime-only time ranges.
+    Plot exact neutral mass against exact mass minus formula-based nominal mass.
     - composition_path: composition txt (with 'number of header rows', columns include SumFormula, Mass)
     - trace_path: huge trace csv (with 'number of header rows', columns Time, unixTime, and SumFormula columns)
     - time_range: (datetime_start, datetime_end); naive datetimes assumed UTC
@@ -66,8 +67,14 @@ def md_plot(
     - show: if True, call plt.show()
     - savepath: if provided, save the figure to this path (PNG, PDF, etc.)
     - stream: stream the CSV by time window and only needed columns
+    - high_res: True/False switches both prepared PTR traces and composition;
+      None keeps the supplied files. Raw CSV paths must be selected explicitly.
     """
     plt.rcParams.update(cfg.PAPER_RC_PARAMS)
+    if high_res is not None:
+        from .prepared import select_prepared_resolution
+        trace_path = select_prepared_resolution(trace_path, high_res)
+        composition_path = select_prepared_resolution(composition_path, high_res)
 
     # Validate UTC time range
     t0_dt, t1_dt = _ensure_datetimes(time_range)
@@ -94,7 +101,14 @@ def md_plot(
         )
 
     # Aggregate over requested window
-    if stream:
+    from .prepared import PreparedSource, read_prepared
+    if isinstance(trace_path, PreparedSource):
+        traces = read_prepared(trace_path, common, time_range)
+        agg_series = pd.Series({
+            name: pd.Series(np.maximum(ch.values, 0) if clip_neg else ch.values).mean()
+            for name, ch in traces.channels.items()
+        })
+    elif stream:
         agg_series = aggregate_window_streaming(
             trace_path=trace_path,
             t0_dt=t0_dt,
@@ -148,10 +162,9 @@ def md_plot(
     if df_plot.empty:
         raise RuntimeError("No data to plot after time-window aggregation and filtering.")
 
-    # Classical mass defect: MD = m - round(m)
-    nominal, defect = classical_mass_defect(df_plot["NeutralMass"].values)
-    df_plot["NominalMass"] = nominal
-    df_plot["MassDefect"] = defect
+    # Use the neutral formula so adduct atoms do not enter the reference mass.
+    df_plot["NominalMass"] = df_plot["CompoundFormula"].map(nominal_mass)
+    df_plot["MassDefect"] = df_plot["NeutralMass"] - df_plot["NominalMass"]
 
     # Color mapping (continuous O:C ratio or discrete number of O atoms)
     mode = color_by if color_by is not None else getattr(cfg, "COLOR_BY", "OC")
@@ -188,14 +201,15 @@ def md_plot(
         scatter_kwargs["vmax"] = cspec.vmax
 
     sc = ax.scatter(
-        df_plot["NominalMass"].values,
+        df_plot["NeutralMass"].values,
         df_plot["MassDefect"].values,
         **scatter_kwargs,
     )
     ax.axhline(0, color="gray", lw=1, ls="--")
-    ax.set_xlabel(getattr(cfg, "XLABEL", "Nominal neutral mass"))
+    ax.set_xlabel(getattr(cfg, "XLABEL", "Exact neutral mass [Da]"))
     ax.set_ylabel(getattr(cfg, "YLABEL", "Mass defect"))
-    ax.set_title(f"Mass Defect Plot, UTC ∈ [{t0_dt.isoformat()} — {t1_dt.isoformat()}]")
+    ax.set_title(
+        f"{t0_dt.isoformat(sep=' ')} — {t1_dt.isoformat(sep=' ')}  |  Minimum mean intensity: {i_cut:g} ppt")
 
     if cspec.ticks is not None:
         cbar = plt.colorbar(sc, ax=ax, ticks=cspec.ticks, spacing="proportional")
@@ -249,8 +263,9 @@ def md_plot(
     if ylim is not None:
         ax.set_ylim(ylim)
     else:
-        # default signed MD limits
-        ax.set_ylim(-0.55, 0.55)
+        # Keep the familiar range, expanding for unwrapped formula mass defects.
+        low, high = ax.get_ylim()
+        ax.set_ylim(min(-0.55, low), max(0.55, high))
 
     families = reference_families
     if families is None:
@@ -262,11 +277,11 @@ def md_plot(
     for family in families:
         fam = (_family_members(df_plot, family)
                .dropna(subset=["On", "MassDefect"])
-               .sort_values("NominalMass"))
+               .sort_values("NeutralMass"))
         if len(fam) < 2:
             continue
 
-        x = fam["NominalMass"].to_numpy(dtype=float)
+        x = fam["NeutralMass"].to_numpy(dtype=float)
         y = fam["MassDefect"].to_numpy(dtype=float)
 
         xs, ys = list(x), list(y)
@@ -296,6 +311,7 @@ def md_plot(
             annotation_clip=False,
         )
 
+    _add_atom_direction_key(ax)
     plt.tight_layout()
 
     # Save and/or show
@@ -315,6 +331,31 @@ def md_plot(
 # -----------------------------
 # Internals (file reading, streaming, utilities)
 # -----------------------------
+
+def _add_atom_direction_key(ax):
+    """Upper-left one-atom vectors in the same data units as the compounds."""
+    color = "0.25"
+    left, right = ax.get_xlim()
+    bottom, top = ax.get_ylim()
+    origin = (left + 0.05 * (right - left),
+              top - 0.08 * (top - bottom) - (exact_mass("H") - nominal_mass("H")))
+    for atom, offset, alignment in [
+        ("H", (0, 5), "center"),
+        ("C", (5, 2), "left"),
+        ("O", (5, -5), "left"),
+    ]:
+        mass = exact_mass(atom)
+        end = (origin[0] + mass, origin[1] + mass - nominal_mass(atom))
+        ax.annotate("", xy=end, xytext=origin, xycoords="data",
+                    textcoords="data", zorder=10,
+                    arrowprops=dict(arrowstyle="->", mutation_scale=8,
+                                    linewidth=1.2, color=color,
+                                    shrinkA=0, shrinkB=0))
+        ax.annotate(f"+{atom}", xy=end, xycoords="data",
+                    xytext=offset, textcoords="offset points",
+                    fontsize=10, color=color, ha=alignment,
+                    va="bottom" if atom != "O" else "top", zorder=10)
+
 
 @dataclass
 class _ColorSpec:

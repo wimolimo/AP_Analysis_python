@@ -129,8 +129,14 @@ def _report_trace_overlaps(paths, times_ms):
         print("Trace merge: no overlapping file time coverage in the loaded window.")
 
 
-def load_data(filepath: str | Path | list[str | Path], time_range=None):
+def load_data(filepath: str | Path | list[str | Path], time_range=None, *, channels=None):
     """Load one of the data formats used by the CLOUD18 analysis."""
+    from .prepared import PreparedSource
+    if isinstance(filepath, PreparedSource):
+        return filepath.load(channels=channels, time_range=time_range)
+    if channels is not None:
+        data = load_data(filepath, time_range)
+        return Dataset({name: data[name] for name in channels})
     if isinstance(filepath, (list, tuple)):
         if not filepath:
             raise ValueError("File list must not be empty")
@@ -157,6 +163,9 @@ def load_data(filepath: str | Path | list[str | Path], time_range=None):
     with filepath.open("r", encoding="utf-8", errors="replace") as f:
         first_line = f.readline().strip()
 
+    if first_line.startswith("# Export created"):
+        return load_processed_ltof(filepath, time_range)
+
     # SMPS and PTR trace files can both declare a number of header rows.
     # Identify SMPS explicitly by filename before inspecting custom headers.
     if "smps" in filepath.name.lower():
@@ -182,6 +191,30 @@ def load_data(filepath: str | Path | list[str | Path], time_range=None):
         return _load_ap_format(filepath, time_range)
 
     return _load_normal_format(filepath, time_range)
+
+
+def load_processed_ltof(filepath, time_range=None):
+    """Load processed LToF CSV values unchanged, using its shared UTC clock.
+
+    Metadata lines start with '#'; the first column is 'time'. Read in
+    chunks so a run window does not require keeping the entire campaign.
+    """
+    frames = []
+    for frame in pd.read_csv(filepath, comment="#", chunksize=2000):
+        if frame.columns[0] != "time":
+            raise ValueError("Processed LToF CSV must start with a 'time' column")
+        times = _timestamps_to_unix_ms(frame.iloc[:, 0])
+        mask = np.isfinite(times) & _range_mask(times, time_range)
+        selected = frame.loc[mask].copy()
+        selected["time"] = times[mask]
+        frames.append(selected)
+    if not frames:
+        raise ValueError("Processed LToF CSV contains no data rows")
+    frame = pd.concat(frames, ignore_index=True)
+    times = frame.iloc[:, 0].to_numpy(dtype=float)
+    return Dataset({str(name): Channel(str(name), times,
+                    pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=float))
+                    for name in frame.columns[1:]})
 
 
 def _load_normal_format(filepath, time_range=None):
@@ -386,6 +419,16 @@ def exact_mass(formula: str) -> float:
     return total
 
 
+def nominal_mass(formula: str) -> float:
+    """Sum constituent isotope mass numbers, rather than rounding total mass."""
+    total = 0
+    for token, n in element_counts(formula).items():
+        if token not in ELEMENT_MASSES:
+            return np.nan
+        total += round(ELEMENT_MASSES[token]) * n
+    return total
+
+
 def _element_total(counts: dict, symbol: str) -> int:
     """Sum an element across isotopes: 'C' matches 'C' and 'C(13)'."""
     return sum(n for t, n in counts.items()
@@ -467,6 +510,9 @@ def _read_table_with_header_skip(path: str) -> pd.DataFrame:
 
 
 def read_composition_table(path: str, available: Optional[Iterable[str]] = None) -> pd.DataFrame:
+    from .prepared import PreparedSource, read_prepared_composition
+    if isinstance(path, PreparedSource):
+        return read_prepared_composition(path, available)
     df = _read_table_with_header_skip(path)
     df.columns = [c.strip() for c in df.columns]
     colmap = {c.lower(): c for c in df.columns}
@@ -585,8 +631,24 @@ def filter_adducts(
 
 
 def read_trace_header(path: str) -> dict:
-    skiprows = _detect_and_skip_header_rows(path)
-    sep = _detect_delimiter(path)
+    from .prepared import PreparedSource, prepared_channel_info
+    if isinstance(path, PreparedSource):
+        return dict(time_col="Time", unix_col="unixTime",
+                    intensity_cols=list(prepared_channel_info(path)), sep=None, skiprows=0)
+    # Some CLOUD exports undercount multiline comments in their declared header.
+    # Locate the actual trace table rather than treating a comment as its header.
+    import csv
+    with open(path, encoding="utf-8-sig") as stream:
+        for skiprows, line in enumerate(stream):
+            for sep in ("\t", ","):
+                names = [name.strip().lower() for name in next(csv.reader([line], delimiter=sep))]
+                if "time" in names and "unixtime" in names:
+                    break
+            else:
+                continue
+            break
+        else:
+            raise ValueError("Trace file must contain 'Time' and 'unixTime' columns.")
     df0 = pd.read_csv(path, skiprows=skiprows, sep=sep, engine="c", nrows=0)
     cols = [c.strip() for c in df0.columns]
     colmap = {c.lower(): c for c in cols}
@@ -689,6 +751,9 @@ def read_trace_timeseries(
     The trace file is read in chunks and filtered using the ``unixTime``
     column, so the complete trace file does not need to be loaded into memory.
     """
+    from .prepared import PreparedSource, read_prepared_traces
+    if isinstance(path, PreparedSource):
+        return read_prepared_traces(path, compounds, time_range)
     if isinstance(path, (list, tuple)):
         if not path:
             raise ValueError("File list must not be empty")
@@ -755,9 +820,9 @@ def read_trace_timeseries(
 
     out = pd.concat(chunks, ignore_index=True)
 
-    parsed_time = pd.to_datetime(out[time_col], errors="coerce")
-    if parsed_time.notna().any():
-        out[time_col] = parsed_time
+    # Use the same authoritative clock as load_trace_format. Parsing the text
+    # column can discard valid rows when fractional seconds vary between rows.
+    out[time_col] = pd.to_datetime(out[unix_col].to_numpy(dtype=float) * 1000, unit="ms")
 
     return out.sort_values(unix_col).reset_index(drop=True)
 

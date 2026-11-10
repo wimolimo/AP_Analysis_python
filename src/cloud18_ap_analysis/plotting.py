@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 import calendar
+from contextlib import contextmanager
+from contextvars import ContextVar
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -21,6 +23,40 @@ from .config import DPI, PAPER_LINE_COLORS, PAPER_UNSTACKED_SIZE, STAGE_SETTINGS
 
 import pandas as pd
 import warnings
+
+plt.rcParams["agg.path.chunksize"] = cfg.PAPER_RC_PARAMS["agg.path.chunksize"]
+
+_WINDOW_KIND = ContextVar("cloud18_plot_window_kind", default="overview")
+
+
+@contextmanager
+def _plot_window_kind(kind):
+    token = _WINDOW_KIND.set(kind)
+    try:
+        yield
+    finally:
+        _WINDOW_KIND.reset(token)
+
+
+def _maximize_window(fig):
+    """Maximize supported GUI windows, keeping title bars and controls visible."""
+    window = getattr(getattr(fig.canvas, "manager", None), "window", None)
+    if window is None:
+        return
+    try:
+        if hasattr(window, "showMaximized"):  # Qt
+            window.showMaximized()
+        elif hasattr(window, "state"):  # Tk on Windows
+            window.state("zoomed")
+        elif hasattr(window, "Maximize"):  # wx
+            window.Maximize(True)
+        # Process the resize before layout/savefig reads the canvas dimensions.
+        flush = getattr(fig.canvas, "flush_events", None)
+        if flush is not None:
+            flush()
+    except Exception:
+        # Unsupported window managers must not prevent a plot from opening.
+        pass
 
 
 def set_plot_backend(backend: str):
@@ -339,25 +375,25 @@ def _draw_stages(ax, stages, xlims=None, print_details=False, label_y=None):
         #
         # Therefore the label stays at the same vertical position even
         # when the y-axis is zoomed or rescaled.
-        ax.text(
-            stage_time,
-            label_y,
+        ax.annotate(
             label,
-            transform=ax.get_xaxis_transform(),
+            xy=(stage_time, label_y),
+            xycoords=("data", "axes fraction"),
+            xytext=(3, 0),
+            textcoords="offset points",
             rotation=90,
             va="bottom",
-            ha="right",
+            ha="left",
             fontsize=7,
+            annotation_clip=True,
             clip_on=True,
         )
 
         if print_details:
             details = stage.get("details", [])
-
-            if details:
-                print(f"\n--- {label} ---")
-                for detail in details:
-                    print(f"  {detail}")
+            print(f"\n--- {label} ---")
+            for detail in details:
+                print(f"  {detail}")
 
 
 def _draw_fan_speed_shading(ax, data, fan_speed_col="Fan_BOT_Speed", threshold=50,
@@ -695,6 +731,14 @@ def _plot_channels(channels, title="Overview", savepath=None, stacked=False,
 
 
 def _configure_save_and_present(fig, interactive, savepath=None):
+    maximize = (cfg.MAXIMIZE_TIME_TRACE_WINDOWS if _WINDOW_KIND.get() == "time_traces"
+                else cfg.MAXIMIZE_OVERVIEW_WINDOWS)
+    if maximize:
+        # Use a large canvas in batch mode too. GUI resize events then replace
+        # this fallback with the actual maximized canvas size when available.
+        fig.set_size_inches(*cfg.MAXIMIZED_FIGURE_SIZE, forward=True)
+        if interactive:
+            _maximize_window(fig)
     # Preserve existing layout engines, especially constrained-layout colorbars.
     if fig.get_layout_engine() is None:
         fig.tight_layout()

@@ -11,12 +11,20 @@ PAPER_FONT_SIZE = 12
 PAPER_LABEL_SIZE = 14
 PAPER_LINE_WIDTH = 1.0
 
+# Maximize overview/time-trace windows and save using the enlarged figure size.
+MAXIMIZE_OVERVIEW_WINDOWS = True
+MAXIMIZE_TIME_TRACE_WINDOWS = True
+# Fallback size in inches for saving without a GUI (16:9, Full HD at 100 dpi).
+MAXIMIZED_FIGURE_SIZE = (19.2, 10.8)
+
 PAPER_LINE_COLORS = [
     "#0072B2", "#D55E00", "#009E73", "#E69F00",
     "#56B4E9", "#CC79A7", "#F0E442", "#000000",
 ]
 
 PAPER_RC_PARAMS = {
+    # Render dense high-resolution lines in smaller pieces; data are unchanged.
+    "agg.path.chunksize": 10000,
     "font.family": "sans-serif",
     "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
     "font.size": PAPER_FONT_SIZE,
@@ -68,7 +76,7 @@ KINETIC_MARKER_COLOR = "black"
 # =============================================================================
 
 MD_FIG_SIZE = (14.0, 8.0)
-XLABEL = "Compound m/z [Da]"
+XLABEL = "Exact neutral mass [Da]"
 YLABEL = "Mass defect [Da]"
 
 # Preferred adduct when several ions represent the same neutral compound.
@@ -98,15 +106,15 @@ SIZE_BY_INTENSITY = True
 SIZE_SCALE = "log"
 ALPHA = 0.7
 MIN_INTENSITY = 0.01  # ppt
-SIZE_ANCHOR_I = 1.0   # ppt
-SIZE_ANCHOR_S = 400.0 # pt^2
-SIZE_EXP = 0.5
+SIZE_ANCHOR_I = 10.0  # ppt
+SIZE_ANCHOR_S = 4000.0  # pt²
+SIZE_EXP = 1.0
 
 SIZE_LEGEND = True
 SIZE_LEGEND_TITLE = "Mean intensity [ppt]"
 SIZE_LEGEND_STYLE = "geom"  # "decade", "geom", or "explicit"
 SIZE_LEGEND_NMAX = 3
-SIZE_LEGEND_LEVELS = [100, 1, 0.01]
+SIZE_LEGEND_LEVELS = [10, 1, 0.1]
 SIZE_LEGEND_LOC = "upper right"
 
 # Homologous-family reference lines.
