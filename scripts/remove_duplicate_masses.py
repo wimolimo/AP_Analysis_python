@@ -14,7 +14,8 @@ import os
 import shutil
 import tempfile
 
-INPUT_CSV = Path(r"C:\Users\c7441399\Documents\CLOUD18\AP_run\masslist_v4.csv")
+# INPUT_CSV = Path(r"C:\Users\c7441399\Documents\CLOUD18\AP_run\masslist_v4.csv")
+INPUT_CSV = Path(r"C:\Users\c7441399\Documents\CLOUD18\AP_run\LTOF_UFRA\masslist_nonanal_LTOF.csv")
 MASS_TOLERANCE = 0.0001
 
 
