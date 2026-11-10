@@ -1,56 +1,31 @@
 """Example CLOUD18 plotting script.
 
-Edit the paths below for your local data.
+Choose a prepared run and plotting options below; configure inputs in runs.py.
 """
 
 from datetime import datetime
 from cloud18_ap_analysis import md_plot
+from cloud18_ap_analysis.prepared import load_prepared_run
+
+run_id = "m25"
+high_res = False  # True selects high-resolution PTR traces and matching composition.
+run = load_prepared_run(run_id, high_res=high_res)
 
 time_range = (
-    datetime(2025, 10, 2, 2, 0, 0),
-    datetime(2025, 10, 2, 4, 0, 0),
+    datetime(2025, 10, 2, 0, 0, 0),
+    datetime(2025, 10, 2, 1, 0, 0),
 )
 
-# high resolution data
-# composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.txt"
-# trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.csv"
+time_ranges = [(datetime(2025, 10, 2, 0, 0, 0), datetime(2025, 10, 2, 1, 0, 0)), 
+               (datetime(2025, 10, 2, 2, 0, 0), datetime(2025, 10, 2, 4, 0, 0)),
+               (datetime(2025, 10, 2, 7, 0, 0), datetime(2025, 10, 2, 9, 0, 0))]
 
-# low resolution data
-composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.txt"
-trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.csv"
+# Composition and trace data come from the same prepared run.
+composition_file = run["composition_path"]
+trace_file = run["trace_paths"]
 
-md_plot(composition_file, trace_file, time_range=time_range, xlim=(80, 370), ylim=(0.02, 0.205), savepath="output/-25C/md_plot_2-4.png",
-        stream=True, color_by="On", reference_families=["C10H15Ox", "C10H16Ox", "C10H17Ox", "C10H18Ox", "C9H16Ox", "C9H14Ox", "C10H20Ox"],
-        mass_range=(100, 350))
+for time_range in time_ranges:
 
-# time_range = (
-#     datetime(2025, 10, 2, 0, 0, 0),
-#     datetime(2025, 10, 2, 1, 0, 0),
-# )
-
-# # high resolution data
-# # composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.txt"
-# # trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.csv"
-
-# # low resolution data
-# composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.txt"
-# trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.csv"
-
-# md_plot(composition_file, trace_file, time_range=time_range, xlim=(100, 350), ylim=(0.02, 0.205), savepath="output/-25C/md_plot_0-1.png",
-#         stream=True, color_by="On", reference_families=["C10H15Ox", "C10H16Ox", "C10H17Ox", "C10H18Ox", "C9H16Ox", "C9H14Ox", "C10H20Ox"])
-
-# time_range = (
-#     datetime(2025, 10, 2, 7, 0, 0),
-#     datetime(2025, 10, 2, 9, 0, 0),
-# )
-
-# # high resolution data
-# # composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.txt"
-# # trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1_high_res.csv"
-
-# # low resolution data
-# composition_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3compositions_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.txt"
-# trace_file = r"C:\Users\c7441399\Documents\CLOUD18\AP_run\-25C\results\ptr3traces_UIBK_oVOCs_AP_run_CLOUD18_inletLossCorr_T-25C_V1.csv"
-
-# md_plot(composition_file, trace_file, time_range=time_range, xlim=(100, 350), ylim=(0.02, 0.205), savepath="output/-25C/md_plot_7-9.png",
-#         stream=True, color_by="On", reference_families=["C10H15Ox", "C10H16Ox", "C10H17Ox", "C10H18Ox", "C9H16Ox", "C9H14Ox", "C10H20Ox"])
+    md_plot(composition_file, trace_file, time_range=time_range, xlim=(80, 370), ylim=(0.02, 0.205), savepath=f"output/{run_id}/md_plot_10ppq_{time_range[0].hour}h-{time_range[1].hour}h.png",
+            stream=True, color_by="On", reference_families=["C10H15Ox", "C10H16Ox", "C10H17Ox", "C10H18Ox"],
+            mass_range=(100, 350))
