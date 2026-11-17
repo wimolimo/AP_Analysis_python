@@ -95,68 +95,102 @@ compounds = [("ptr", name) for name in ['C10H15O4.NH3H+', 'C10H16O4.NH3H+',
 compounds = [("ptr", name) for name in ['C10H15O4.NH3H+', 'C10H16O4.NH3H+',
     'C10H17O3.NH3H+', 'C10H18O3.NH3H+',]] + [("horus", "RO2_crosstalk_ppt")] + [("ltof", "C20H30O6")]
 
-trace_figures, means, regression_results, kinetic_fig, kinetic_ax, k_temperature_fig, k_temperature_ax = temp_dep(
-    temperature_runs=temperature_runs,
-    combine_runs=combine_runs,              # None for seperate fits
-    compounds=compounds,
-    horus_path=horus_path,
-    # (instrument, exact channel name in H5); no ion suffix is inferred.
-    precursor_compound=("ptr", "C10H15O4.NH3H+"),    # RO2
-    product_compound=("ltof", "C20H30O6"),
-    reaction_partner="RO2",     # ("ptr", "C10H15O4.NH3H+"),
-    overlay=True,
-    show=["kinetics", "k(T)"],  # "traces", "kinetics", "k(T)", a list of these, or True for all
-    concentration_unit=concentration_unit,
-    pressure_pa=pressure_pa,
-    yscale=trace_yscale,
-    smoothing_time_traces=smoothing_time_traces,
-    color_by_ap=True,  # Set False to color points by temperature instead
-    ap_path=ap_path,
-    stages_path=stages_path,
-    fan_speed_path=fan_speed_path,  # None disables the low-fan-speed strip
-    stages="type",
-    label_intervals=False,  # Matching t_i tags on shaded intervals and kinetic points
-    fit_intercept=True,  # False fixes the kinetic fit intercept at zero
-    trace_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/trace_{run_id}_{precursor_compound}_{reaction_partner}_no_tags.png",
-    kinetic_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kinetic_{precursor_compound}_{reaction_partner}_no_tags.png",
-    k_temperature_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kT_{precursor_compound}_{reaction_partner}.png",
-)
+# trace_figures, means, regression_results, kinetic_fig, kinetic_ax, k_temperature_fig, k_temperature_ax = temp_dep(
+#     temperature_runs=temperature_runs,
+#     combine_runs=combine_runs,              # None for seperate fits
+#     compounds=compounds,
+#     horus_path=horus_path,
+#     # (instrument, exact channel name in H5); no ion suffix is inferred.
+#     precursor_compound=("ptr", "C10H15O4.NH3H+"),    # RO2
+#     product_compound=("ltof", "C20H30O6"),
+#     reaction_partner="RO2",
+#     overlay=True,
+#     show=["kinetics", "k(T)"],  # "traces", "kinetics", "k(T)", a list of these, or True for all
+#     concentration_unit=concentration_unit,
+#     pressure_pa=pressure_pa,
+#     yscale=trace_yscale,
+#     smoothing_time_traces=smoothing_time_traces,
+#     color_by_ap=True,  # Set False to color points by temperature instead
+#     ap_path=ap_path,
+#     stages_path=stages_path,
+#     fan_speed_path=fan_speed_path,  # None disables the low-fan-speed strip
+#     stages="type",
+#     label_intervals=False,  # Matching t_i tags on shaded intervals and kinetic points
+#     fit_intercept=True,  # False fixes the kinetic fit intercept at zero
+#     trace_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/trace_{run_id}_{precursor_compound}_{reaction_partner}_no_tags.png",
+#     kinetic_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kinetic_{precursor_compound}_{reaction_partner}_no_tags.png",
+#     k_temperature_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kT_{precursor_compound}_{reaction_partner}.png",
+# )
 
-print(regression_results)
+# print(regression_results)
+
+############################## C10H15O4 + RO2 -> C20H30O8 ##################################
+
+compounds = [("ptr", name) for name in ['C10H15O4.NH3H+', 'C10H16O4.NH3H+',
+    'C10H17O3.NH3H+', 'C10H18O3.NH3H+',]] + [("horus", "RO2_crosstalk_ppt")] + [("ltof", "C20H30O6")]
+
+# trace_figures, means, regression_results, kinetic_fig, kinetic_ax, k_temperature_fig, k_temperature_ax = temp_dep(
+#     temperature_runs=temperature_runs,
+#     combine_runs=combine_runs,              # None for seperate fits
+#     compounds=compounds,
+#     horus_path=horus_path,
+#     # (instrument, exact channel name in H5); no ion suffix is inferred.
+#     precursor_compound=("ptr", "C10H15O4.NH3H+"),    # RO2
+#     product_compound=("ltof", "C20H30O8"),
+#     reaction_partner="RO2",
+#     overlay=True,
+#     show=["kinetics", "k(T)"],  # "traces", "kinetics", "k(T)", a list of these, or True for all
+#     concentration_unit=concentration_unit,
+#     pressure_pa=pressure_pa,
+#     yscale=trace_yscale,
+#     smoothing_time_traces=smoothing_time_traces,
+#     color_by_ap=True,  # Set False to color points by temperature instead
+#     ap_path=ap_path,
+#     stages_path=stages_path,
+#     fan_speed_path=fan_speed_path,  # None disables the low-fan-speed strip
+#     stages="type",
+#     label_intervals=False,  # Matching t_i tags on shaded intervals and kinetic points
+#     fit_intercept=True,  # False fixes the kinetic fit intercept at zero
+#     trace_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/trace_{run_id}_{precursor_compound}_{reaction_partner}_no_tags.png",
+#     kinetic_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kinetic_{precursor_compound}_{reaction_partner}_no_tags.png",
+#     k_temperature_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kT_{precursor_compound}_{reaction_partner}.png",
+# )
+
+# print(regression_results)
 
 ################################ C10H15O4 + C10H15O4 -> C20H30O6 ##################################
 
 compounds = [("ptr", name) for name in ['C10H15O4.NH3H+', 'C10H16O4.NH3H+',
     'C10H17O3.NH3H+', 'C10H18O3.NH3H+',]] + [("ltof", "C20H30O6")]
 
-trace_figures, means, regression_results, kinetic_fig, kinetic_ax, k_temperature_fig, k_temperature_ax = temp_dep(
-    temperature_runs=temperature_runs,
-    combine_runs=combine_runs,              # None for seperate fits
-    compounds=compounds,
-    horus_path=horus_path,
-    # (instrument, exact channel name in H5); no ion suffix is inferred.
-    precursor_compound=("ptr", "C10H15O4.NH3H+"),    # RO2
-    product_compound=("ltof", "C20H30O6"),
-    reaction_partner=("ptr", "C10H15O4.NH3H+"),
-    overlay=True,
-    show=["kinetics", "k(T)"],  # "traces", "kinetics", "k(T)", a list of these, or True for all
-    concentration_unit=concentration_unit,
-    pressure_pa=pressure_pa,
-    yscale=trace_yscale,
-    smoothing_time_traces=smoothing_time_traces,
-    color_by_ap=True,  # Set False to color points by temperature instead
-    ap_path=ap_path,
-    stages_path=stages_path,
-    fan_speed_path=fan_speed_path,  # None disables the low-fan-speed strip
-    stages="type",
-    label_intervals=False,  # Matching t_i tags on shaded intervals and kinetic points
-    fit_intercept=True,  # False fixes the kinetic fit intercept at zero
-    trace_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/trace_{run_id}_{precursor_compound}_{reaction_partner}_no_tags.png",
-    kinetic_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kinetic_{precursor_compound}_{reaction_partner}_no_tags.png",
-    k_temperature_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kT_{precursor_compound}_{reaction_partner}.png",
-)
+# trace_figures, means, regression_results, kinetic_fig, kinetic_ax, k_temperature_fig, k_temperature_ax = temp_dep(
+#     temperature_runs=temperature_runs,
+#     combine_runs=combine_runs,              # None for seperate fits
+#     compounds=compounds,
+#     horus_path=horus_path,
+#     # (instrument, exact channel name in H5); no ion suffix is inferred.
+#     precursor_compound=("ptr", "C10H15O4.NH3H+"),    # RO2
+#     product_compound=("ltof", "C20H30O6"),
+#     reaction_partner=("ptr", "C10H15O4.NH3H+"),
+#     overlay=True,
+#     show=["kinetics", "k(T)"],  # "traces", "kinetics", "k(T)", a list of these, or True for all
+#     concentration_unit=concentration_unit,
+#     pressure_pa=pressure_pa,
+#     yscale=trace_yscale,
+#     smoothing_time_traces=smoothing_time_traces,
+#     color_by_ap=True,  # Set False to color points by temperature instead
+#     ap_path=ap_path,
+#     stages_path=stages_path,
+#     fan_speed_path=fan_speed_path,  # None disables the low-fan-speed strip
+#     stages="type",
+#     label_intervals=False,  # Matching t_i tags on shaded intervals and kinetic points
+#     fit_intercept=True,  # False fixes the kinetic fit intercept at zero
+#     trace_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/trace_{run_id}_{precursor_compound}_{reaction_partner}_no_tags.png",
+#     kinetic_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kinetic_{precursor_compound}_{reaction_partner}_no_tags.png",
+#     k_temperature_savepath="output/temp_dep/{product_compound}_{precursor_compound}_{reaction_partner}/kT_{precursor_compound}_{reaction_partner}.png",
+# )
 
-print(regression_results)
+# print(regression_results)
 
 ################################ C10H15O4 + C10H15O6 -> C20H30O8 ##################################
 

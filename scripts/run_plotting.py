@@ -16,7 +16,7 @@ concentration_scale = None  # Automatic; or override with "linear" / "log"
 ro2_on_ozone_axis = True  # Set False to put RO2 crosstalk back beside HO2.
 
 run_id = "m25"  # m50_1, m25, m10, m50_2
-high_res = False  # True selects high-resolution PTR traces and matching composition.
+high_res = True  # True selects high-resolution PTR traces and matching composition.
 run = load_prepared_run(run_id, high_res=high_res)
 time_range = (datetime(2025, 10, 1, 21, 0, 0), datetime(2025, 10, 2, 13, 0, 0)) # run["time_range"]
 file_name_temp = run["temperature_path"]
@@ -73,7 +73,7 @@ plot_data(
     interactive=True,
     stages="type",
     fan_speed_data=data_fan,
-    important_time_ranges=None,#run["important_time_ranges"],  # None disables intervals
+    important_time_ranges=run["important_time_ranges"],  # None disables intervals
     label_intervals=True,
     yscale=["linear", trace_scale, trace_scale, "linear", "log"],
 )

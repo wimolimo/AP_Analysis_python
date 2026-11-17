@@ -19,30 +19,34 @@ compounds = {
         # first generation RO2 oxidation products
         # "C10H14O3",       # RO2 + RO2 -> R-CO-R' (ketone)
         # "C10H15O3",       # RO2 + RO2 -> RO' (alkoxyl radical), but probably RO2 from RO2-RO2 reaction (we just do not know)
+        # "C10H15O4",       # AP + O3 -> RO2
         # "C10H15O5",
-        # "C10H16O5",
-        "C10H15O4",       # AP + O3 -> RO2
-        # "C10H16O3",       # RO2 + RO2 -> ROH (alcohol)
-        "C10H16O4",       # RO2 + HO2 -> ROOH (hydroperoxide)
         # "C10H15O6",       # RO2 + O2 -> RO2 (autoxidation product)
-        "C10H17O3",       # AP + OH -> RO2
-        # "C10H17O4",
-        # "C10H17O6",       
-        "C10H18O3",       # RO2 + HO2 -> ROOH (hydroperoxide)
-        # "C10H18O4",       # ROOOH
-        # "C10H18O8",
+        # "C10H16O3",       # RO2 + RO2 -> ROH (alcohol)
+        # "C10H16O4",       # RO2 + HO2 -> ROOH (hydroperoxide)
+        # "C10H16O5",
         # "C10H16O8",
         # "C10H16O10",
+        # "C10H17O3",       # AP + OH -> RO2
+        # "C10H17O4",
+        # "C10H17O6",       
+        # "C10H18O3",       # RO2 + HO2 -> ROOH (hydroperoxide)
+        # "C10H18O4",       # ROOOH
+        # "C10H18O8",
+        # "C10H15O2",
+        # "C10H16O",
     ],
 
     # Processed LTOF concentrations (molecules/cm3) are available for all runs.
     "ltof": [
         # "C20H30O6",
         # "C20H30O8",
-        # "C19H28O5",
-        # "C19H28O7",
+        "C19H28O5",
+        "C19H28O7",
+        "C19H28O9",
+        "C19H28O11",
         # "C20H34O6",
-        # "C20H34O8",
+        "C20H34O8",
         # "C20H34O10",
         # "C20H32O7",
 

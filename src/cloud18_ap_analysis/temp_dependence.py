@@ -682,7 +682,7 @@ def plot_kinetic_relationship(
     if color_by_ap and missing_ap:
         handles.append(Line2D([], [], marker="o", linestyle="none", color="0.6"))
         labels.append("AP unavailable")
-    ax.legend(handles, labels, title="Temperature; fit ±1σ")
+    ax.legend(handles, labels)
     _style_axis(ax)
     fig.tight_layout()
 
@@ -878,7 +878,7 @@ def plot_k_temperature(regression_results, concentration_unit="native", *,
         ax.plot(temperatures, slopes, color="0.65", linewidth=1.0,
                 zorder=1, label="_nolegend_")
     if count:
-        ax.legend(title="Temperature")
+        ax.legend()
     else:
         print("No usable slopes with numeric temperatures for the k(T) plot.")
         ax.text(0.5, 0.5, "No usable k(T) data", transform=ax.transAxes,
@@ -887,8 +887,6 @@ def plot_k_temperature(regression_results, concentration_unit="native", *,
     unit = r"cm$^3$ molecule$^{-1}$" if concentration_unit == "molecules/cm3" else r"pptv$^{-1}$"
     ax.set_ylabel(f"Concentration slope k [{unit}]")
     ax.set_title(title or "Concentration slope versus temperature")
-    ax.text(0.02, 0.98, "Error bars: ±1σ", transform=ax.transAxes,
-            ha="left", va="top", fontsize=cfg.PAPER_LABEL_SIZE)
     _style_axis(ax)
     fig.tight_layout()
     if savepath:

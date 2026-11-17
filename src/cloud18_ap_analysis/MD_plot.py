@@ -38,7 +38,7 @@ class MDPlotResult:
 
 
 def md_plot(
-    composition_path: str,
+    composition_path: str | None,
     trace_path: str,
     time_range: Tuple[datetime, datetime],  # datetime only
     clip_neg: bool = False,                 # clip negative intensities to 0 before aggregating
@@ -53,6 +53,12 @@ def md_plot(
     chunksize: int = 200_000,
     assume_sorted_unix: bool = True,
     high_res: bool | None = None,
+    instrument: str = "ptr",
+    min_intensity: float | None = None,
+    size_anchor_intensity: float | None = None,
+    size_anchor_area: float | None = None,
+    size_exponent: float | None = None,
+    size_legend_levels: Optional[List[float]] = None,
 ) -> MDPlotResult:
     """
     Plot exact neutral mass against exact mass minus formula-based nominal mass.
@@ -67,9 +73,42 @@ def md_plot(
     - show: if True, call plt.show()
     - savepath: if provided, save the figure to this path (PNG, PDF, etc.)
     - stream: stream the CSV by time window and only needed columns
+    - instrument: "ptr" uses a composition table; "ltof" derives neutral masses
+      from processed LTOF formula columns and ignores composition_path (pass None).
+    - min_intensity: minimum mean in native units (PTR ppt; LTOF molecules/cm3).
+    - min_intensity and size parameters default to config's instrument-specific
+      *_PTR or *_LTOF settings. Overrides apply only to this call.
+    - size_anchor_intensity, size_anchor_area, size_exponent: area = anchor_area *
+      (mean concentration / anchor_intensity) ** exponent.
+    - size_legend_levels: concentrations displayed in the size legend;
+      an empty list selects automatic levels.
     - high_res: True/False switches both prepared PTR traces and composition;
       None keeps the supplied files. Raw CSV paths must be selected explicitly.
     """
+    if instrument not in {"ptr", "ltof"}:
+        raise ValueError("instrument must be 'ptr' or 'ltof'")
+    if instrument == "ltof" and high_res is not None:
+        raise ValueError("high_res applies only to PTR")
+    unit = "ppt" if instrument == "ptr" else "molecules/cm³"
+    suffix = instrument.upper()
+    i_cut = float(min_intensity if min_intensity is not None else
+                  getattr(cfg, f"MIN_INTENSITY_{suffix}"))
+    anchor = float(size_anchor_intensity if size_anchor_intensity is not None else
+                   getattr(cfg, f"SIZE_ANCHOR_I_{suffix}"))
+    area = float(size_anchor_area if size_anchor_area is not None else
+                 getattr(cfg, f"SIZE_ANCHOR_S_{suffix}"))
+    exponent = float(size_exponent if size_exponent is not None else
+                     getattr(cfg, f"SIZE_EXP_{suffix}"))
+    legend_levels = (size_legend_levels if size_legend_levels is not None else
+                     getattr(cfg, f"SIZE_LEGEND_LEVELS_{suffix}"))
+    if not np.isfinite(i_cut) or i_cut < 0:
+        raise ValueError("min_intensity must be finite and nonnegative")
+    for name, value in [("size_anchor_intensity", anchor), ("size_anchor_area", area),
+                        ("size_exponent", exponent)]:
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    if any(not np.isfinite(v) or v <= 0 for v in legend_levels):
+        raise ValueError("size_legend_levels must contain finite positive values")
     plt.rcParams.update(cfg.PAPER_RC_PARAMS)
     if high_res is not None:
         from .prepared import select_prepared_resolution
@@ -81,16 +120,20 @@ def md_plot(
     if t1_dt < t0_dt:
         raise ValueError("time_range end < start")
 
-    # Load small composition table
-    header = read_trace_header(trace_path)
-    all_trace_formulas = header["intensity_cols"]
-
-    comp = read_composition_table(composition_path, available=all_trace_formulas)
-    comp["SumFormula"] = comp["SumFormula"].astype(str).str.strip()
-
-    # MD plots use one representative ion per neutral compound, preserving
-    # the historical preference order from config.ADDUCT_PRIORITY.
-    comp = select_preferred_adducts(comp)
+    from .prepared import PreparedSource, read_prepared
+    ltof_data = None
+    if instrument == "ltof":
+        from .loading import load_data, load_processed_ltof
+        ltof_data = (load_data(trace_path, time_range) if isinstance(trace_path, PreparedSource)
+                     else load_processed_ltof(trace_path, time_range))
+        all_trace_formulas = list(ltof_data.channels)
+        comp = _ltof_composition(all_trace_formulas)
+    else:
+        header = read_trace_header(trace_path)
+        all_trace_formulas = header["intensity_cols"]
+        comp = read_composition_table(composition_path, available=all_trace_formulas)
+        comp["SumFormula"] = comp["SumFormula"].astype(str).str.strip()
+        comp = select_preferred_adducts(comp)
 
     # Intersect formulas present in both files
     common = sorted(set(comp["SumFormula"]).intersection(all_trace_formulas))
@@ -101,12 +144,11 @@ def md_plot(
         )
 
     # Aggregate over requested window
-    from .prepared import PreparedSource, read_prepared
-    if isinstance(trace_path, PreparedSource):
-        traces = read_prepared(trace_path, common, time_range)
+    if ltof_data is not None or isinstance(trace_path, PreparedSource):
+        traces = ltof_data if ltof_data is not None else read_prepared(trace_path, common, time_range)
         agg_series = pd.Series({
             name: pd.Series(np.maximum(ch.values, 0) if clip_neg else ch.values).mean()
-            for name, ch in traces.channels.items()
+            for name, ch in traces.channels.items() if name in common
         })
     elif stream:
         agg_series = aggregate_window_streaming(
@@ -150,14 +192,13 @@ def md_plot(
             print(f"[md_plot] dropped {n_dropped_mass}/{n_before_mass_filter} compounds "
                   f"outside mass range [{m_min:.1f}, {m_max:.1f}]")
 
-    i_cut = float(getattr(cfg, "MIN_INTENSITY", 0.005))
 
     n_before = len(df_plot)
-    df_plot = df_plot[df_plot["AggIntensity"] >= i_cut].copy()
+    df_plot = df_plot[(df_plot["AggIntensity"] >= i_cut) & (df_plot["AggIntensity"] > 0)].copy()
     n_dropped = n_before - len(df_plot)
     if n_dropped:
         print(f"[md_plot] dropped {n_dropped}/{n_before} compounds with "
-              f"intensity < {i_cut:.3g} ppt")
+              f"intensity < {i_cut:.3g} {unit}")
 
     if df_plot.empty:
         raise RuntimeError("No data to plot after time-window aggregation and filtering.")
@@ -176,7 +217,8 @@ def md_plot(
 
         sizes = _compute_sizes_from_intensity(
             intensities,
-            reference_intensity=intensities,
+            reference_intensity=intensities, anchor_intensity=anchor,
+            anchor_area=area, exponent=exponent,
         )
     else:
         sizes = float(getattr(cfg, "POINT_SIZE", 12.0))
@@ -209,7 +251,7 @@ def md_plot(
     ax.set_xlabel(getattr(cfg, "XLABEL", "Exact neutral mass [Da]"))
     ax.set_ylabel(getattr(cfg, "YLABEL", "Mass defect"))
     ax.set_title(
-        f"{t0_dt.isoformat(sep=' ')} — {t1_dt.isoformat(sep=' ')}  |  Minimum mean intensity: {i_cut:g} ppt")
+        f"{t0_dt.isoformat(sep=' ')} — {t1_dt.isoformat(sep=' ')}  |  Minimum mean intensity: {i_cut:g} {unit}")
 
     if cspec.ticks is not None:
         cbar = plt.colorbar(sc, ax=ax, ticks=cspec.ticks, spacing="proportional")
@@ -223,10 +265,13 @@ def md_plot(
     if getattr(cfg, "SIZE_BY_INTENSITY", True) and getattr(cfg, "SIZE_LEGEND", True):
         intens = df_plot["AggIntensity"].values
 
-        levels = [v for v in _size_legend_levels(intens) if v >= i_cut]
+        levels = [v for v in (legend_levels if len(legend_levels) else
+                              np.unique(np.geomspace(intens.min(), intens.max(), 3)))
+                  if v >= i_cut]
         level_sizes = _compute_sizes_from_intensity(
             np.array(levels, dtype=float),
-            reference_intensity=intens,
+            reference_intensity=intens, anchor_intensity=anchor,
+            anchor_area=area, exponent=exponent,
         )
 
         handles = [
@@ -244,7 +289,8 @@ def md_plot(
         size_leg = ax.legend(
             handles,
             labels,
-            title=getattr(cfg, "SIZE_LEGEND_TITLE", "Mean intensity [ppt]"),
+            title=(getattr(cfg, "SIZE_LEGEND_TITLE", "Mean intensity [ppt]")
+                   if instrument == "ptr" else f"Mean concentration [{unit}]"),
             loc=getattr(cfg, "SIZE_LEGEND_LOC", "upper right"),
             frameon=True,
             framealpha=0.9,
@@ -305,7 +351,7 @@ def md_plot(
                 zorder=0.5)
 
         ax.annotate(
-            family, (xs[-1], ys[-1]),
+            _format_family_label(family), (xs[-1], ys[-1]),
             textcoords="offset points", xytext=(5, 0),
             fontsize=12, color="0.35", ha="left", va="center",
             annotation_clip=False,
@@ -457,6 +503,12 @@ _formula_token = re.compile(r"([A-Z][a-z]?)(\d*)")
 _FAMILY_RE = re.compile(r"^([A-Za-z0-9()]*?)O?x$")
 
 
+def _format_family_label(family: str) -> str:
+    """Display family atom counts as subscripts without changing selection."""
+    formula = re.sub(r"(\d+|x)", r"_{\1}", family.strip())
+    return rf"$\mathrm{{{formula}}}$"
+
+
 def _family_members(comp: pd.DataFrame, family: str) -> pd.DataFrame:
     """
     'C10H16Ox' -> all rows whose CompoundFormula is C10H16 + n oxygens
@@ -482,7 +534,8 @@ def _family_members(comp: pd.DataFrame, family: str) -> pd.DataFrame:
 
 
 
-def _compute_sizes_from_intensity(x, reference_intensity=None) -> np.ndarray:
+def _compute_sizes_from_intensity(x, reference_intensity=None, anchor_intensity=None,
+                                  anchor_area=None, exponent=None) -> np.ndarray:
     """
     Absolute power-law size mapping, no clipping:
 
@@ -491,9 +544,9 @@ def _compute_sizes_from_intensity(x, reference_intensity=None) -> np.ndarray:
     Non-positive intensities return NaN — they must be filtered out
     upstream, not silently floored.
     """
-    i_ref = float(getattr(cfg, "SIZE_ANCHOR_I", 100.0))
-    s_ref = float(getattr(cfg, "SIZE_ANCHOR_S", 45.0))
-    p     = float(getattr(cfg, "SIZE_EXP", 1.0))
+    i_ref = float(anchor_intensity if anchor_intensity is not None else getattr(cfg, "SIZE_ANCHOR_I", 100.0))
+    s_ref = float(anchor_area if anchor_area is not None else getattr(cfg, "SIZE_ANCHOR_S", 45.0))
+    p     = float(exponent if exponent is not None else getattr(cfg, "SIZE_EXP", 1.0))
 
     x = np.asarray(x, dtype=float)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -568,3 +621,27 @@ def _format_size_label(v: float) -> str:
     defect = m - nominal
     return nominal, defect
 
+
+
+def _ltof_composition(channels):
+    """Treat processed neutral-formula columns as molecules; skip ion/metadata labels."""
+    rows, skipped = [], []
+    for name in channels:
+        try:
+            counts = element_counts(name)
+            mass = exact_mass(name)
+            if not counts or not np.isfinite(mass):
+                raise ValueError("Unsupported formula")
+        except ValueError:
+            skipped.append(name)
+            continue
+        carbon = sum(n for atom, n in counts.items() if atom == "C" or atom.startswith("C("))
+        oxygen = sum(n for atom, n in counts.items() if atom == "O" or atom.startswith("O("))
+        rows.append(dict(SumFormula=name, CompoundFormula=name, Adduct="",
+                         Mass=mass, NeutralMass=mass, On=oxygen,
+                         OC=oxygen / carbon if carbon else np.nan))
+    if skipped:
+        print(f"[md_plot] skipped {len(skipped)} ion or unsupported channels: {', '.join(skipped[:10])}")
+    if not rows:
+        raise ValueError("No neutral molecular formulas found in LTOF data")
+    return pd.DataFrame(rows)

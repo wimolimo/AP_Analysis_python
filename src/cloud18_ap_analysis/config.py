@@ -105,7 +105,7 @@ ON_LABEL = "Number of O atoms"
 SIZE_BY_INTENSITY = True
 SIZE_SCALE = "log"
 ALPHA = 0.7
-MIN_INTENSITY = 0.01  # ppt
+MIN_INTENSITY = 0.05  # ppt
 SIZE_ANCHOR_I = 10.0  # ppt
 SIZE_ANCHOR_S = 4000.0  # pt²
 SIZE_EXP = 1.0
@@ -123,3 +123,16 @@ REF_LINE_X_START = None
 REF_LINE_X_END = 320.0
 REF_LINE_COLOR = "0.5"
 REF_LINE_WIDTH = 1.1
+
+# Instrument-specific MD plot settings (native concentration units).
+MIN_INTENSITY_PTR = 0.05  # pptv
+SIZE_ANCHOR_I_PTR = 10.0  # pptv
+SIZE_ANCHOR_S_PTR = 4000.0  # points squared
+SIZE_EXP_PTR = 1.0
+SIZE_LEGEND_LEVELS_PTR = [10, 1, 0.1]
+
+MIN_INTENSITY_LTOF = 1e3  # molecules/cm3
+SIZE_ANCHOR_I_LTOF = 1e5  # molecules/cm3
+SIZE_ANCHOR_S_LTOF = 4000.0  # points squared
+SIZE_EXP_LTOF = 1.0
+SIZE_LEGEND_LEVELS_LTOF = [1e5, 1e4, 1e3]
